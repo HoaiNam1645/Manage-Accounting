@@ -442,6 +442,153 @@
 
             /* Hide Browser col */
         }
+
+        .spin-anim {
+            animation: spin 1s linear infinite;
+            transform-origin: center;
+        }
+
+        .btn-loading {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        @keyframes spin {
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* MODAL STYLES */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-content {
+            background: var(--bg-card);
+            border-radius: 16px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            max-height: 80vh;
+        }
+
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .modal-body {
+            padding: 24px;
+        }
+
+        .modal-footer {
+            padding: 16px 24px;
+        }
+
+        /* LOGIN ITEM */
+        .login-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+
+        .login-item-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .login-item-name {
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        .login-item-id {
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-family: monospace;
+        }
+
+        .login-status {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .login-status.pending {
+            background: var(--bg-primary);
+            color: var(--text-secondary);
+        }
+
+        .login-status.running {
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+            animation: pulse 1.5s infinite;
+        }
+
+        .login-status.success {
+            background: var(--success-bg);
+            color: var(--success-color);
+        }
+
+        .login-status.error {
+            background: var(--danger-bg);
+            color: var(--danger-color);
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.6;
+            }
+        }
+
+        .spin {
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
     </style>
 </head>
 
@@ -462,6 +609,17 @@
                 <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Theme">
                     <i data-lucide="moon"></i>
                 </button>
+
+                <span id="excelFileName"
+                    style="font-size:12px; font-weight:500; color:var(--primary-color); max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:none;"></span>
+
+                <input type="file" id="excelUploadInput" accept=".xlsx, .xls" style="display:none"
+                    onchange="handleExcelUploadNew(this)">
+                <button class="btn btn-secondary" onclick="document.getElementById('excelUploadInput').click()"
+                    title="Upload Credentials Excel">
+                    <i data-lucide="file-spreadsheet"></i> Upload Creds
+                </button>
+
                 <button class="btn btn-secondary" onclick="loadProfiles()">
                     <i data-lucide="refresh-cw"></i> Refresh
                 </button>
@@ -495,6 +653,11 @@
                 style="border-color: #f59e0b; color: #f59e0b;">
                 <i data-lucide="download"></i> Fetch All
             </button>
+
+            <button class="btn btn-primary" onclick="openBatchLoginModal()" id="loginSelectedBtn"
+                style="background: linear-gradient(135deg, #8b5cf6, #7c3aed);">
+                <i data-lucide="log-in"></i> Login Selected
+            </button>
         </div>
 
         <!-- LIST GRID -->
@@ -524,6 +687,45 @@
         </div>
     </div>
 
+    <!-- BATCH LOGIN MODAL -->
+    <div class="modal-overlay" id="batchLoginModal" style="display:none;">
+        <div class="modal-content" style="max-width:600px; max-height:80vh;">
+            <div class="modal-header">
+                <h3 style="display:flex; align-items:center; gap:8px;">
+                    <i data-lucide="log-in" style="color:#8b5cf6;"></i>
+                    Batch Login TikTok
+                </h3>
+                <button class="btn-icon" onclick="closeBatchLoginModal()">
+                    <i data-lucide="x"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;">
+                    <span id="batchLoginStatus" style="font-size:14px; color:var(--text-secondary);">
+                        Ready to login
+                    </span>
+                    <span id="batchLoginProgress" style="font-size:14px; font-weight:600;">
+                        0/0
+                    </span>
+                </div>
+                <div class="progress-track" style="margin-bottom:16px;">
+                    <div class="progress-fill" id="batchLoginProgressFill" style="width:0%;"></div>
+                </div>
+                <div id="batchLoginList" style="max-height:400px; overflow-y:auto;">
+                    <!-- Login items will be injected here -->
+                </div>
+            </div>
+            <div class="modal-footer"
+                style="display:flex; gap:12px; justify-content:flex-end; padding-top:16px; border-top:1px solid var(--border-color);">
+                <button class="btn btn-secondary" onclick="closeBatchLoginModal()">Close</button>
+                <button class="btn btn-primary" id="startBatchLoginBtn" onclick="startBatchLogin()"
+                    style="background: linear-gradient(135deg, #8b5cf6, #7c3aed);">
+                    <i data-lucide="play"></i> Start Login
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- TOASTS -->
     <div class="toast-container" id="toastContainer"></div>
 
@@ -533,6 +735,33 @@
         let allProfiles = [];
         let filteredProfiles = [];
         let isDark = true; // Default dark mode
+        const activeLoginProfiles = new Set(); // Track loading profiles
+
+        // Helper to update UI button for a profile
+        function updateProfileLoginUI(profileId, isLoading) {
+            if (isLoading) {
+                activeLoginProfiles.add(profileId);
+            } else {
+                activeLoginProfiles.delete(profileId);
+            }
+
+            // Find button if exists in current view
+            const btn = document.querySelector(`button[data-login-btn-id="${profileId}"]`);
+            if (btn) {
+                if (isLoading) {
+                    btn.disabled = true;
+                    // Force animation style
+                    btn.innerHTML = `<i data-lucide="loader-2" style="animation: spin 1s linear infinite;"></i>`;
+                    btn.classList.add('btn-loading');
+                } else {
+                    btn.disabled = false;
+                    // Restore purple color
+                    btn.innerHTML = `<i data-lucide="log-in" style="color:#8b5cf6"></i>`;
+                    btn.classList.remove('btn-loading');
+                }
+                lucide.createIcons();
+            }
+        }
 
         // Theme Toggle
         function toggleTheme() {
@@ -613,6 +842,12 @@
                         <button class="btn-icon" onclick="runProfile('${p.id}')" title="Run Profile">
                             <i data-lucide="play" style="color:var(--success-color)"></i>
                         </button>
+                        <button class="btn-icon ${activeLoginProfiles.has(p.id) ? 'btn-loading' : ''}" 
+                            ${activeLoginProfiles.has(p.id) ? 'disabled' : ''} 
+                            data-login-btn-id="${p.id}"
+                            onclick="loginTikTok('${p.id}', '${(p.name || '').replace(/'/g, "\\'")}')" title="Login TikTok">
+                            ${activeLoginProfiles.has(p.id) ? '<i data-lucide="loader-2" class="spin-anim"></i>' : '<i data-lucide="log-in" style="color:#8b5cf6"></i>'}
+                        </button>
                         <button class="btn-icon" onclick="fetchTikTokData('${p.id}')" title="Run & Fetch TikTok">
                             <i data-lucide="dollar-sign" style="color:#f59e0b"></i>
                         </button>
@@ -680,6 +915,48 @@
             const res = await ipcRenderer.invoke('stop-profile', id);
             if (res.success) showToast('Profile stopped', 'info');
             else showToast(res.message, 'error');
+        }
+
+        // Auto-login TikTok Seller Center
+        // Now redirects to Batch Login Modal for consistent UI
+        async function loginTikTok(profileId, profileName) {
+            // Reset state
+            pendingLoginQueue = [];
+            activeLoginCount = 0;
+            isBatchLoginRunning = false;
+            batchResults = { success: 0, failed: 0, total: 1 };
+
+            const listEl = document.getElementById('batchLoginList');
+            listEl.innerHTML = '';
+
+            // Add single profile to queue
+            const name = profileName || 'Unknown Profile';
+            pendingLoginQueue.push({ id: profileId, name, status: 'pending' });
+
+            // Add to UI
+            const itemEl = document.createElement('div');
+            itemEl.className = 'login-item';
+            itemEl.id = `login-item-${profileId}`;
+            itemEl.innerHTML = `
+                <div class="login-item-info">
+                    <span class="login-item-name">${name}</span>
+                    <span class="login-item-id">${profileId}</span>
+                </div>
+                <span class="login-status pending" id="login-status-${profileId}">Pending</span>
+            `;
+            listEl.appendChild(itemEl);
+
+            // Update header status
+            document.getElementById('batchLoginStatus').textContent = 'Ready to login 1 profile';
+            document.getElementById('batchLoginProgress').textContent = '0/1';
+            document.getElementById('batchLoginProgressFill').style.width = '0%';
+            document.getElementById('startBatchLoginBtn').disabled = false;
+            document.getElementById('startBatchLoginBtn').innerHTML = '<i data-lucide="play"></i> Start Login';
+            lucide.createIcons();
+
+            // Show modal and auto-start
+            document.getElementById('batchLoginModal').style.display = 'flex';
+            startBatchLogin();
         }
 
         // Chạy profile và lấy dữ liệu TikTok Finance
@@ -839,12 +1116,213 @@
 
             box.innerHTML = `<i data-lucide="${icon}" style="color:${color}"></i> <span>${msg}</span>`;
             document.getElementById('toastContainer').appendChild(box);
-            lucide.createIcons({ root: box });
+            lucide.createIcons();
 
             setTimeout(() => {
                 box.style.opacity = '0';
                 setTimeout(() => box.remove(), 300);
             }, 3000);
+        }
+
+        // ============================================
+        // BATCH LOGIN LOGIC
+        // ============================================
+
+        let pendingLoginQueue = [];
+        let activeLoginCount = 0;
+        const MAX_CONCURRENT_LOGINS = 5;
+        let isBatchLoginRunning = false;
+        let batchResults = { success: 0, failed: 0, total: 0 };
+
+        function openBatchLoginModal() {
+            // Get selected profiles
+            const checkboxes = document.querySelectorAll('.profile-checkbox:checked');
+            if (checkboxes.length === 0) {
+                showToast('Please select at least one profile', 'error');
+                return;
+            }
+
+            // Reset state
+            pendingLoginQueue = [];
+            activeLoginCount = 0;
+            isBatchLoginRunning = false;
+            batchResults = { success: 0, failed: 0, total: checkboxes.length };
+
+            const listEl = document.getElementById('batchLoginList');
+            listEl.innerHTML = '';
+
+            // Add profiles to queue and UI
+            checkboxes.forEach(cb => {
+                const row = cb.closest('.grid-row');
+                // Get name from the second column, first div (updated selector for accuracy)
+                const nameEl = row.querySelector('.profile-name') || row.children[1].firstElementChild;
+                const name = nameEl ? nameEl.textContent : 'Unknown';
+                const id = cb.value; // Value of checkbox is profile ID
+
+                pendingLoginQueue.push({ id, name, status: 'pending' });
+
+                // Add to UI
+                const itemEl = document.createElement('div');
+                itemEl.className = 'login-item';
+                itemEl.id = `login-item-${id}`;
+                itemEl.innerHTML = `
+                    <div class="login-item-info">
+                        <span class="login-item-name">${name}</span>
+                        <span class="login-item-id">${id}</span>
+                    </div>
+                    <span class="login-status pending" id="login-status-${id}">Pending</span>
+                `;
+                listEl.appendChild(itemEl);
+            });
+
+            // Update header status
+            document.getElementById('batchLoginStatus').textContent = `Ready to login ${pendingLoginQueue.length} profiles`;
+            document.getElementById('batchLoginProgress').textContent = `0/${pendingLoginQueue.length}`;
+            document.getElementById('batchLoginProgressFill').style.width = '0%';
+            document.getElementById('startBatchLoginBtn').disabled = false;
+            document.getElementById('startBatchLoginBtn').innerHTML = '<i data-lucide="play"></i> Start Login';
+            lucide.createIcons();
+
+            // Show modal
+            document.getElementById('batchLoginModal').style.display = 'flex';
+        }
+
+        function closeBatchLoginModal() {
+            if (isBatchLoginRunning) {
+                showToast('Please wait until all logins are completed!', 'warning');
+                return;
+            }
+            document.getElementById('batchLoginModal').style.display = 'none';
+        }
+
+        async function startBatchLogin() {
+            if (isBatchLoginRunning) return;
+
+            isBatchLoginRunning = true;
+            document.getElementById('startBatchLoginBtn').disabled = true;
+            document.getElementById('startBatchLoginBtn').innerHTML = '<i data-lucide="loader-2" class="spin"></i> Running...';
+            lucide.createIcons();
+
+            document.getElementById('batchLoginStatus').textContent = 'Processing...';
+
+            // Start initial batch
+            processLoginQueue();
+        }
+
+        function processLoginQueue() {
+            if (!isBatchLoginRunning) return;
+
+            // Fill empty slots up to MAX_CONCURRENT_LOGINS
+            while (activeLoginCount < MAX_CONCURRENT_LOGINS && pendingLoginQueue.length > 0) {
+                const profile = pendingLoginQueue.shift(); // Get next profile
+                if (!profile) break;
+
+                runSingleLogin(profile);
+            }
+
+            // Check if finished
+            if (activeLoginCount === 0 && pendingLoginQueue.length === 0) {
+                isBatchLoginRunning = false;
+                document.getElementById('batchLoginStatus').textContent = 'Completed!';
+                document.getElementById('startBatchLoginBtn').disabled = false;
+                document.getElementById('startBatchLoginBtn').innerHTML = '<i data-lucide="check"></i> Done';
+                lucide.createIcons();
+                showToast(`Batch login completed: ${batchResults.success} success, ${batchResults.failed} failed`, 'info');
+            }
+        }
+
+        async function runSingleLogin(profile) {
+            activeLoginCount++;
+            updateProfileLoginUI(profile.id, true); // Update Main Grid UI
+            updateLoginStatus(profile.id, 'running', 'Logging in...');
+
+            try {
+                // Call IPC to login
+                const res = await ipcRenderer.invoke('login-tiktok', profile.id, profile.name);
+
+                if (res.success) {
+                    batchResults.success++;
+                    updateLoginStatus(profile.id, 'success', 'Success');
+                } else {
+                    batchResults.failed++;
+                    updateLoginStatus(profile.id, 'error', res.message || 'Failed');
+                }
+            } catch (error) {
+                batchResults.failed++;
+                updateLoginStatus(profile.id, 'error', error.message);
+            } finally {
+                updateProfileLoginUI(profile.id, false); // Revert Main Grid UI
+                activeLoginCount--;
+                updateProgress();
+                processLoginQueue(); // Trigger next item
+            }
+        }
+
+        function updateLoginStatus(id, type, text) {
+            const badge = document.getElementById(`login-status-${id}`);
+            if (badge) {
+                // Remove all status classes first
+                badge.classList.remove('pending', 'running', 'success', 'error');
+                badge.classList.add(type);
+                badge.textContent = text;
+
+                // Scroll item into view if running
+                if (type === 'running') {
+                    const item = document.getElementById(`login-item-${id}`);
+                    item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            }
+        }
+
+        function updateProgress() {
+            const completed = batchResults.success + batchResults.failed;
+            const total = batchResults.total;
+            const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+            document.getElementById('batchLoginProgress').textContent = `${completed}/${total}`;
+            document.getElementById('batchLoginProgressFill').style.width = `${percent}%`;
+
+            document.getElementById('batchLoginStatus').textContent = `Processing... (${activeLoginCount} active)`;
+        }
+
+        // Load profiles on startup
+        loadProfiles();
+
+        // Handle Excel Upload
+        async function handleExcelUpload(input) {
+            if (input.files && input.files[0]) {
+                const file = input.files[0];
+                // In Electron, File object has 'path' property
+                // But browsers don't. Since we are in Electron renderer, it might be available if webSecurity is disabled or via special handling.
+                // However, correct way is to use 'webUtils.getPathForFile' or simply trust Electron's input.files[0].path if nodeIntegration is on.
+
+                // Let's assume contextIsolation=false or nodeIntegration=true for now based on ipcRenderer usage.
+                let filePath = file.path;
+
+                if (!filePath) {
+                    showToast('Cannot get file path. Please ensure app has file access.', 'error');
+                    return;
+                }
+
+                showToast('Uploading credentials...', 'info');
+
+                try {
+                    const res = await ipcRenderer.invoke('upload-credentials-excel', filePath);
+
+                    if (res.success) {
+                        showToast(res.message, 'success');
+                        document.getElementById('statusText').textContent = `Credentials loaded: ${res.count} profiles (Session)`;
+                    } else {
+                        showToast(res.message, 'error');
+                    }
+                } catch (error) {
+                    console.error('Upload error:', error);
+                    showToast('Failed to upload file', 'error');
+                }
+
+                // Reset input
+                input.value = '';
+            }
         }
 
         // Helpers
@@ -853,6 +1331,48 @@
             @keyframes spin { 100% { transform: rotate(360deg); } }
         `;
         document.head.appendChild(style);
+    </script>
+    <script>
+        // New Excel Upload Handler (FileReader version)
+        async function handleExcelUploadNew(input) {
+            if (input.files && input.files[0]) {
+                const file = input.files[0];
+                const fileName = file.name;
+                showToast(`Reading ${fileName}...`, 'info');
+
+                const reader = new FileReader();
+                reader.onload = async function (e) {
+                    try {
+                        const buffer = new Uint8Array(e.target.result);
+                        showToast('Uploading credentials...', 'info');
+
+                        const res = await ipcRenderer.invoke('upload-credentials-excel', buffer);
+
+                        if (res.success) {
+                            showToast(res.message, 'success');
+                            document.getElementById('statusText').textContent = `Credentials loaded: ${res.count} profiles (Session)`;
+
+                            // Show file name
+                            const nameSpan = document.getElementById('excelFileName');
+                            if (nameSpan) {
+                                nameSpan.textContent = fileName;
+                                nameSpan.style.display = 'inline-block';
+                                nameSpan.title = fileName; // Tooltip
+                            }
+                        } else {
+                            showToast(res.message, 'error');
+                        }
+                    } catch (error) {
+                        console.error('Upload error:', error);
+                        showToast('Failed to upload file content', 'error');
+                    }
+                };
+                reader.onerror = () => showToast('Error reading file', 'error');
+                reader.readAsArrayBuffer(file);
+
+                input.value = '';
+            }
+        }
     </script>
 </body>
 

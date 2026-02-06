@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import * as path from 'path';
 import axios from 'axios';
 import puppeteer from 'puppeteer-core';
+import { loginTikTokSeller } from './tiktok-login';
+import { getCredentialsByProfileId, getCredentialsByProfileName, readAllCredentials, loadCredentialsFromExcel, loadCredentialsFromExcelBuffer } from './credentials-reader';
 
 const API_BASE = 'http://127.0.0.1:2268';
 
@@ -75,6 +77,7 @@ function extractSellerIdFromUrl(url: string): { sellerId: string; oecSellerId: s
 // ============================================
 // HYBRID APPROACH - Fast Direct API Call
 // ============================================
+// Note: TikTok login functions are in ./tiktok-login.ts
 
 interface CookieData {
     name: string;
@@ -544,6 +547,96 @@ ipcMain.handle('get-profiles', async () => {
                 ? 'Không thể kết nối Hidemyacc. Hãy mở app Hidemyacc trước!'
                 : error.message
         };
+    }
+});
+
+// ============================================
+// API: Credentials Management
+// ============================================
+ipcMain.handle('upload-credentials-excel', async (_event, fileBuffer: Uint8Array) => {
+    try {
+        console.log(`[IPC] Uploading credentials from Excel Buffer (size: ${fileBuffer.length})`);
+        // Convert Uint8Array to Node Buffer
+        const buffer = Buffer.from(fileBuffer);
+        const result = loadCredentialsFromExcelBuffer(buffer);
+        return result;
+    } catch (error: any) {
+        console.error('[IPC] Excel Upload Error:', error.message);
+        return { success: false, message: error.message };
+    }
+});
+
+// ============================================
+// API: Auto-login TikTok Seller Center
+// ============================================
+ipcMain.handle('login-tiktok', async (_event, profileId: string, profileName?: string) => {
+    try {
+        console.log(`[Login] Starting login for profile ${profileId}...`);
+
+        // Step 0: Get credentials from JSON file
+        let credentials = getCredentialsByProfileId(profileId);
+
+        // If not found by ID, try by name
+        if (!credentials && profileName) {
+            credentials = getCredentialsByProfileName(profileName);
+        }
+
+        if (!credentials) {
+            return {
+                success: false,
+                message: `Missing credentials for profile ${profileName || profileId}. Please upload the Excel file containing this profile!`
+            };
+        }
+
+        console.log(`[Login] Found credentials for: ${credentials.profileName}`);
+
+        // Step 1: Start profile
+        let port: number;
+        try {
+            const startResponse = await axios.post<ApiResponse<StartProfileData>>(`${API_BASE}/profiles/start/${profileId}`);
+            if (startResponse.data.code !== 1 || !startResponse.data.data.success) {
+                throw new Error('Failed to start profile');
+            }
+            port = startResponse.data.data.port;
+            console.log(`[Login] Profile started on port ${port}`);
+        } catch (startError: any) {
+            const statusCode = startError.response?.status;
+
+            if (statusCode === 409) {
+                // Profile already running - get port
+                console.log(`[Login] Profile already running, getting port...`);
+                try {
+                    const statusResponse = await axios.get(`${API_BASE}/profiles/status/${profileId}`);
+                    if (statusResponse.data?.data?.port) {
+                        port = statusResponse.data.data.port;
+                    } else {
+                        throw new Error('Could not get port from running profile');
+                    }
+                } catch (e) {
+                    throw new Error('Profile conflict - could not get port');
+                }
+            } else if (statusCode === 400) {
+                return { success: false, message: 'Profile is in use by another user' };
+            } else {
+                throw startError;
+            }
+        }
+
+        // Step 2: Wait for browser to initialize
+        await sleep(3000);
+
+        // Step 3: Perform login with credentials from JSON
+        const result = await loginTikTokSeller(port!, {
+            email: credentials.email,
+            password: credentials.password,
+            twoFactorSecret: credentials.twoFactorSecret
+        });
+
+        return result;
+
+    } catch (error: any) {
+        console.error('[Login] Error:', error.message);
+        return { success: false, message: error.message };
     }
 });
 
