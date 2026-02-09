@@ -1130,7 +1130,7 @@
 
         let pendingLoginQueue = [];
         let activeLoginCount = 0;
-        const MAX_CONCURRENT_LOGINS = 5;
+        const MAX_CONCURRENT_LOGINS = 5; // Parallel login for speed
         let isBatchLoginRunning = false;
         let batchResults = { success: 0, failed: 0, total: 0 };
 

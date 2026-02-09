@@ -26,6 +26,13 @@ export interface LoginResult {
     requires2FA?: boolean;
 }
 
+export interface WindowLayout {
+    screenWidth: number;
+    screenHeight: number;
+    windowIndex: number;
+    maxWindows: number;
+}
+
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
@@ -38,23 +45,23 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Human-like typing with random delays between characters
+ * Fast typing with small random delays (still human-like but faster)
  * Uses keyboard.type() for better React compatibility
  */
 async function humanType(page: any, selector: string, text: string): Promise<void> {
     // Click to focus the input
     await page.click(selector);
-    await sleep(300);
+    await sleep(150);
 
     // Clear any existing value (triple-click to select all, then delete)
     await page.click(selector, { clickCount: 3 });
     await page.keyboard.press('Backspace');
-    await sleep(200);
+    await sleep(100);
 
-    // Type each character using keyboard (more reliable for React)
+    // Type each character using keyboard (faster but still natural)
     for (const char of text) {
-        await page.keyboard.type(char, { delay: 50 + Math.random() * 100 });
-        await sleep(20 + Math.random() * 30); // Small random delay between chars
+        await page.keyboard.type(char, { delay: 15 + Math.random() * 20 }); // 15-35ms per char
+        await sleep(5 + Math.random() * 10); // 5-15ms between chars
     }
 }
 
@@ -95,10 +102,12 @@ async function get2FACode(secret: string): Promise<string | null> {
  * 
  * @param debugPort - Browser debug port (from Hidemyacc)
  * @param credentials - Login credentials (email, password, optional 2FA secret)
+ * @param windowLayout - Optional window position/size info for grid layout
  */
 export async function loginTikTokSeller(
     debugPort: number,
-    credentials: LoginCredentials
+    credentials: LoginCredentials,
+    windowLayout?: WindowLayout
 ): Promise<LoginResult> {
     console.log(`[Login] Connecting to browser on port ${debugPort}...`);
 
@@ -106,16 +115,84 @@ export async function loginTikTokSeller(
     let page: any = null;
 
     try {
-        // Connect to browser
-        browser = await puppeteer.connect({
-            browserURL: `http://127.0.0.1:${debugPort}`,
-            defaultViewport: null
-        });
-        console.log('[Login] ✓ Connected to browser');
+        // Connect to browser with retry logic
+        const maxRetries = 3;
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                browser = await puppeteer.connect({
+                    browserURL: `http://127.0.0.1:${debugPort}`,
+                    defaultViewport: null
+                });
+                console.log('[Login] ✓ Connected to browser');
+                break;
+            } catch (connectError: any) {
+                console.log(`[Login] Connection attempt ${attempt}/${maxRetries} failed: ${connectError.message}`);
+                if (attempt === maxRetries) {
+                    throw new Error(`Failed to connect to browser after ${maxRetries} attempts`);
+                }
+                await sleep(2000); // Wait 2s before retry
+            }
+        }
 
         // Get existing page or create new one
         const pages = await browser.pages();
         page = pages.length > 0 ? pages[0] : await browser.newPage();
+
+        // Resize and position window if layout info provided
+        if (windowLayout) {
+            const { screenWidth, screenHeight, windowIndex, maxWindows } = windowLayout;
+
+            // Calculate grid: 2 columns for up to 4 windows, 3 columns for more
+            const cols = maxWindows <= 4 ? 2 : 3;
+            const rows = Math.ceil(maxWindows / cols);
+
+            // Window size (~50% of screen, adjusted for grid)
+            const winWidth = Math.floor(screenWidth / cols);
+            const winHeight = Math.floor(screenHeight / rows);
+
+            // Position based on index
+            const col = windowIndex % cols;
+            const row = Math.floor(windowIndex / cols);
+            const x = col * winWidth;
+            const y = row * winHeight;
+
+            console.log(`[Login] Window ${windowIndex}: size=${winWidth}x${winHeight}, pos=(${x},${y})`);
+
+            // Try CDP method first (moves and resizes actual window)
+            try {
+                const client = await page.target().createCDPSession();
+                const { windowId } = await client.send('Browser.getWindowForTarget');
+                await client.send('Browser.setWindowBounds', {
+                    windowId,
+                    bounds: {
+                        left: x,
+                        top: y,
+                        width: winWidth,
+                        height: winHeight,
+                        windowState: 'normal'
+                    }
+                });
+                console.log(`[Login] ✓ Window positioned via CDP`);
+            } catch (cdpError: any) {
+                console.log(`[Login] CDP method failed: ${cdpError.message}`);
+
+                // Fallback: Use evaluate to call window.resizeTo/moveTo
+                try {
+                    await page.evaluate((w: number, h: number, px: number, py: number) => {
+                        window.resizeTo(w, h);
+                        window.moveTo(px, py);
+                    }, winWidth, winHeight, x, y);
+                    console.log(`[Login] ✓ Window positioned via JS`);
+                } catch (jsError: any) {
+                    console.log(`[Login] JS method also failed: ${jsError.message}`);
+                    // Set viewport as last resort (doesn't move window but controls render size)
+                    try {
+                        await page.setViewport({ width: winWidth, height: winHeight - 100 });
+                        console.log(`[Login] Set viewport size as fallback`);
+                    } catch (e) { /* ignore */ }
+                }
+            }
+        }
 
         // Navigate to login page (use domcontentloaded for faster load)
         console.log('[Login] Navigating to TikTok Seller login page...');
@@ -124,9 +201,9 @@ export async function loginTikTokSeller(
             timeout: 60000
         });
 
-        // Wait for page to fully render (React needs time)
+        // Wait for page to fully render (React needs time) - increased from 3s to 5s
         console.log('[Login] Waiting for page to render...');
-        await sleep(3000);
+        await sleep(5000);
 
         // Check if already logged in (redirected to homepage)
         const afterNavigateUrl = page.url();
@@ -140,19 +217,30 @@ export async function loginTikTokSeller(
             return { success: true, message: 'Already logged in!' };
         }
 
-        // Wait for email input to be visible (might not appear if already logged in)
+        // Wait for email input to be visible (with longer timeout)
         console.log('[Login] Waiting for login form...');
         try {
-            await page.waitForSelector('#email_input', { visible: true, timeout: 10000 });
+            await page.waitForSelector('#email_input', { visible: true, timeout: 15000 });
         } catch (e) {
             // Login form not found - check URL again
             const currentUrl = page.url();
+            console.log(`[Login] Form not found, current URL: ${currentUrl}`);
             if (currentUrl.includes('homepage') || currentUrl.includes('dashboard') || currentUrl.includes('setup=')) {
                 console.log('[Login] ✓ Already logged in (detected after wait)!');
                 await browser.disconnect();
                 return { success: true, message: 'Already logged in!' };
             }
-            throw new Error('Login form not found and not logged in');
+
+            // Try one more wait
+            await sleep(3000);
+            const retryUrl = page.url();
+            if (retryUrl.includes('homepage') || retryUrl.includes('dashboard')) {
+                console.log('[Login] ✓ Already logged in (detected after extra wait)!');
+                await browser.disconnect();
+                return { success: true, message: 'Already logged in!' };
+            }
+
+            throw new Error(`Login form not found. Current URL: ${retryUrl}`);
         }
 
         // Extra wait for React to finish rendering

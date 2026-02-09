@@ -139,22 +139,22 @@ export function getCredentialsByProfileId(profileId: string): ProfileCredentials
 }
 
 /**
- * Get credentials for a specific profile by name (partial match)
+ * Get credentials for a specific profile by name (EXACT match, case-insensitive)
  */
 export function getCredentialsByProfileName(profileName: string): ProfileCredentials | null {
     if (!profileName) return null;
 
     const searchName = profileName.toLowerCase().trim();
     const profile = sessionCredentials.find(p =>
-        p.profileName.toLowerCase().includes(searchName) ||
-        searchName.includes(p.profileName.toLowerCase())
+        p.profileName.toLowerCase().trim() === searchName
     );
 
     if (profile) {
-        console.log(`[Credentials] Found credentials for: ${profile.profileName}`);
+        console.log(`[Credentials] Found credentials by NAME: ${profile.profileName}`);
         return profile;
     }
 
+    console.log(`[Credentials] No exact name match for: '${profileName}'`);
     return null;
 }
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import * as path from 'path';
 import axios from 'axios';
 import puppeteer from 'puppeteer-core';
@@ -8,6 +8,25 @@ import { getCredentialsByProfileId, getCredentialsByProfileName, readAllCredenti
 const API_BASE = 'http://127.0.0.1:2268';
 
 let mainWindow: BrowserWindow | null = null;
+
+// Window arrangement tracking - use Set to avoid race conditions
+const usedWindowPositions = new Set<number>();
+const MAX_WINDOWS = 5; // Grid layout for 5 windows
+
+function getNextWindowPosition(): number {
+    for (let i = 0; i < MAX_WINDOWS; i++) {
+        if (!usedWindowPositions.has(i)) {
+            usedWindowPositions.add(i);
+            return i;
+        }
+    }
+    // All positions used, wrap around
+    return 0;
+}
+
+function releaseWindowPosition(index: number): void {
+    usedWindowPositions.delete(index);
+}
 
 // Interfaces
 interface ProfileProxy {
@@ -573,12 +592,17 @@ ipcMain.handle('login-tiktok', async (_event, profileId: string, profileName?: s
     try {
         console.log(`[Login] Starting login for profile ${profileId}...`);
 
-        // Step 0: Get credentials from JSON file
-        let credentials = getCredentialsByProfileId(profileId);
+        // Step 0: Get credentials - Try by NAME first (exact match), then by ID
+        let credentials = null;
 
-        // If not found by ID, try by name
-        if (!credentials && profileName) {
+        // 1. Try by name first (if provided)
+        if (profileName) {
             credentials = getCredentialsByProfileName(profileName);
+        }
+
+        // 2. Fallback to ID
+        if (!credentials) {
+            credentials = getCredentialsByProfileId(profileId);
         }
 
         if (!credentials) {
@@ -625,14 +649,32 @@ ipcMain.handle('login-tiktok', async (_event, profileId: string, profileName?: s
         // Step 2: Wait for browser to initialize
         await sleep(3000);
 
-        // Step 3: Perform login with credentials from JSON
-        const result = await loginTikTokSeller(port!, {
-            email: credentials.email,
-            password: credentials.password,
-            twoFactorSecret: credentials.twoFactorSecret
-        });
+        // Step 3: Calculate window position for grid layout
+        const primaryDisplay = screen.getPrimaryDisplay();
+        const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
 
-        return result;
+        // Get unique window position (thread-safe)
+        const windowIndex = getNextWindowPosition();
+        console.log(`[Login] Assigned window position: ${windowIndex}`);
+
+        try {
+            // Step 4: Perform login with credentials and window layout info
+            const result = await loginTikTokSeller(port!, {
+                email: credentials.email,
+                password: credentials.password,
+                twoFactorSecret: credentials.twoFactorSecret
+            }, {
+                screenWidth,
+                screenHeight,
+                windowIndex,
+                maxWindows: MAX_WINDOWS
+            });
+
+            return result;
+        } finally {
+            // Release position after login (success or fail)
+            releaseWindowPosition(windowIndex);
+        }
 
     } catch (error: any) {
         console.error('[Login] Error:', error.message);
