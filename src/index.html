@@ -291,7 +291,7 @@
 
         .grid-header {
             display: grid;
-            grid-template-columns: 50px 2fr 1fr 1fr 120px;
+            grid-template-columns: 50px minmax(180px, 2fr) 100px 100px 100px 120px;
             padding: 16px 24px;
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border-color);
@@ -304,7 +304,7 @@
 
         .grid-row {
             display: grid;
-            grid-template-columns: 50px 2fr 1fr 1fr 120px;
+            grid-template-columns: 50px minmax(180px, 2fr) 100px 100px 100px 120px;
             padding: 16px 24px;
             border-bottom: 1px solid var(--border-color);
             align-items: center;
@@ -428,19 +428,34 @@
         }
 
         /* RESPONSIVE */
-        @media (max-width: 900px) {
+        @media (max-width: 1100px) {
 
             .grid-header,
             .grid-row {
-                grid-template-columns: 50px 1fr 100px;
+                grid-template-columns: 50px 1fr 100px 100px 140px;
             }
 
+            /* Hide Browser col (3rd) */
             .grid-header>*:nth-child(3),
             .grid-row>*:nth-child(3) {
                 display: none;
             }
+        }
 
-            /* Hide Browser col */
+        @media (max-width: 800px) {
+
+            .grid-header,
+            .grid-row {
+                grid-template-columns: 50px 1fr 80px 120px;
+            }
+
+            /* Hide Browser (3rd) and Status (4th) cols */
+            .grid-header>*:nth-child(3),
+            .grid-row>*:nth-child(3),
+            .grid-header>*:nth-child(4),
+            .grid-row>*:nth-child(4) {
+                display: none;
+            }
         }
 
         .spin-anim {
@@ -666,6 +681,7 @@
                 <div>#</div>
                 <div>Profile Name</div>
                 <div>Browser</div>
+                <div>Status</div>
                 <div>Proxy Status</div>
                 <div style="text-align:right">Actions</div>
             </div>
@@ -736,6 +752,29 @@
         let filteredProfiles = [];
         let isDark = true; // Default dark mode
         const activeLoginProfiles = new Set(); // Track loading profiles
+        const runningProfiles = new Set(); // Track running profiles for toggle button
+
+        // Helper to update profile status in arrays and re-render
+        function updateProfileStatus(profileId, newStatus) {
+            // Update in allProfiles
+            const profileIndex = allProfiles.findIndex(p => p.id === profileId);
+            if (profileIndex !== -1) {
+                allProfiles[profileIndex].status = newStatus;
+            }
+            // Update in filteredProfiles
+            const filteredIndex = filteredProfiles.findIndex(p => p.id === profileId);
+            if (filteredIndex !== -1) {
+                filteredProfiles[filteredIndex].status = newStatus;
+            }
+            // Update runningProfiles set
+            if (newStatus === 'running') {
+                runningProfiles.add(profileId);
+            } else {
+                runningProfiles.delete(profileId);
+            }
+            // Re-render to show updated status
+            renderProfiles();
+        }
 
         // Helper to update UI button for a profile
         function updateProfileLoginUI(profileId, isLoading) {
@@ -819,6 +858,31 @@
 
             filteredProfiles.forEach(p => {
                 const proxyOn = p.proxy?.proxyEnabled;
+
+                // Status badge logic
+                const status = p.status || 'unknown';
+                let statusBadgeClass = 'badge-browser'; // default
+                let statusIcon = 'help-circle';
+                let statusColor = '#6b7280'; // gray
+
+                if (status === 'ready') {
+                    statusBadgeClass = 'badge-proxy on';
+                    statusIcon = 'check-circle';
+                    statusColor = 'var(--success-color)';
+                } else if (status === 'running') {
+                    statusBadgeClass = 'badge-browser';
+                    statusIcon = 'play-circle';
+                    statusColor = 'var(--primary-color)';
+                } else if (status === 'stopped' || status === 'offline') {
+                    statusBadgeClass = 'badge-proxy off';
+                    statusIcon = 'circle';
+                    statusColor = 'var(--text-secondary)';
+                } else if (status === 'error') {
+                    statusBadgeClass = 'badge-proxy off';
+                    statusIcon = 'alert-circle';
+                    statusColor = 'var(--danger-color)';
+                }
+
                 html += `
                 <div class="grid-row">
                     <div style="display:flex; justify-content:center">
@@ -834,13 +898,20 @@
                         </span>
                     </div>
                     <div>
+                        <span class="badge ${statusBadgeClass}">
+                            <i data-lucide="${statusIcon}" size="12" style="color:${statusColor}"></i> ${status.charAt(0).toUpperCase() + status.slice(1)}
+                        </span>
+                    </div>
+                    <div>
                         <span class="badge badge-proxy ${proxyOn ? 'on' : 'off'}">
                             ${proxyOn ? (p.proxy.mode || 'Active') : 'No Proxy'}
                         </span>
                     </div>
                     <div style="text-align:right; display:flex; gap:4px; justify-content:flex-end">
-                        <button class="btn-icon" onclick="runProfile('${p.id}')" title="Run Profile">
-                            <i data-lucide="play" style="color:var(--success-color)"></i>
+                        <button class="btn-icon" onclick="toggleProfile('${p.id}')" title="${status === 'running' || runningProfiles.has(p.id) ? 'Stop Profile' : 'Run Profile'}">
+                            ${status === 'running' || runningProfiles.has(p.id)
+                        ? '<i data-lucide="square" style="color:var(--danger-color)"></i>'
+                        : '<i data-lucide="play" style="color:var(--success-color)"></i>'}
                         </button>
                         <button class="btn-icon ${activeLoginProfiles.has(p.id) ? 'btn-loading' : ''}" 
                             ${activeLoginProfiles.has(p.id) ? 'disabled' : ''} 
@@ -848,11 +919,8 @@
                             onclick="loginTikTok('${p.id}', '${(p.name || '').replace(/'/g, "\\'")}')" title="Login TikTok">
                             ${activeLoginProfiles.has(p.id) ? '<i data-lucide="loader-2" class="spin-anim"></i>' : '<i data-lucide="log-in" style="color:#8b5cf6"></i>'}
                         </button>
-                        <button class="btn-icon" onclick="fetchTikTokData('${p.id}')" title="Run & Fetch TikTok">
+                        <button class="btn-icon" onclick="fetchTikTokData('${p.id}', '${(p.name || '').replace(/'/g, "\\'")}')" title="Run & Fetch TikTok">
                             <i data-lucide="dollar-sign" style="color:#f59e0b"></i>
-                        </button>
-                        <button class="btn-icon" onclick="stopProfile('${p.id}')" title="Stop Profile">
-                            <i data-lucide="square" style="color:var(--danger-color)"></i>
                         </button>
                     </div>
                 </div>`;
@@ -907,14 +975,32 @@
         async function runProfile(id) {
             showToast('Starting profile...', 'info');
             const res = await ipcRenderer.invoke('start-profile', id);
-            if (res.success) showToast('Profile started successfully', 'success');
-            else showToast(res.message, 'error');
+            if (res.success) {
+                showToast('Profile started successfully', 'success');
+                updateProfileStatus(id, 'running');
+            } else {
+                showToast(res.message, 'error');
+            }
         }
 
         async function stopProfile(id) {
             const res = await ipcRenderer.invoke('stop-profile', id);
-            if (res.success) showToast('Profile stopped', 'info');
-            else showToast(res.message, 'error');
+            if (res.success) {
+                showToast('Profile stopped', 'info');
+                updateProfileStatus(id, 'ready');
+            } else {
+                showToast(res.message, 'error');
+            }
+        }
+
+        // Toggle profile: run if stopped, stop if running
+        async function toggleProfile(id) {
+            const isRunning = runningProfiles.has(id);
+            if (isRunning) {
+                await stopProfile(id);
+            } else {
+                await runProfile(id);
+            }
         }
 
         // Auto-login TikTok Seller Center
@@ -960,23 +1046,23 @@
         }
 
         // Chạy profile và lấy dữ liệu TikTok Finance
-        async function fetchTikTokData(profileId) {
+        async function fetchTikTokData(profileId, profileName) {
             showToast('Starting profile & fetching TikTok data...', 'info');
 
             try {
-                const res = await ipcRenderer.invoke('run-and-fetch-tiktok', profileId);
+                const res = await ipcRenderer.invoke('run-and-fetch-tiktok', profileId, profileName);
 
                 if (res.success) {
                     showToast('TikTok data fetched successfully!', 'success');
 
                     // Log data to console for debugging
-                    console.log('TikTok Finance Data:', res.tiktokData);
+                    console.log('TikTok Finance Data:', res);
 
-                    // Hiển thị thông tin cơ bản
-                    if (res.tiktokData && res.tiktokData.data) {
-                        const data = res.tiktokData.data;
-                        console.log('=== TIKTOK FINANCE SUMMARY ===');
-                        console.log('Raw data:', JSON.stringify(data, null, 2));
+                    console.log('=== TIKTOK FINANCE SUMMARY ===');
+                    console.log('Raw data:', JSON.stringify(res, null, 2));
+
+                    if (res.on_hold_amount) {
+                        showToast(`On Hold: ${res.on_hold_amount}`, 'success');
                     }
                 } else {
                     showToast(res.message || 'Failed to fetch TikTok data', 'error');
@@ -1018,6 +1104,11 @@
 
             if (ids.length === 0) return showToast('Please select profiles first', 'error');
 
+            const profilesToFetch = Array.from(chk).map(c => {
+                const profile = allProfiles.find(p => p.id === c.value);
+                return { id: c.value, name: profile ? (profile.name || '') : '' };
+            });
+
             const delay = (parseInt(document.getElementById('delayInput').value) || 3) * 1000;
             const btn = document.getElementById('fetchSelectedBtn');
 
@@ -1027,9 +1118,9 @@
 
             document.getElementById('progressContainer').classList.add('active');
 
-            showToast(`Fetching TikTok data from ${ids.length} profiles...`, 'info');
+            showToast(`Fetching TikTok data from ${profilesToFetch.length} profiles...`, 'info');
 
-            const result = await ipcRenderer.invoke('batch-fetch-tiktok', ids, delay);
+            const result = await ipcRenderer.invoke('batch-fetch-tiktok', profilesToFetch, delay);
 
             btn.disabled = false;
             btn.innerHTML = `<i data-lucide="dollar-sign"></i> Fetch Selected`;
@@ -1037,12 +1128,32 @@
 
             if (result.success) {
                 const successCount = result.results.filter(r => r.success).length;
-                showToast(`Done! ${successCount}/${ids.length} profiles fetched successfully`, 'success');
+                const failedResults = result.results.filter(r => !r.success);
+
+                if (failedResults.length > 0) {
+                    // Show failed profiles with error messages
+                    showToast(`${successCount}/${ids.length} success, ${failedResults.length} failed`, failedResults.length > 0 ? 'error' : 'success');
+
+                    // Show each failed profile error (limit to first 5)
+                    failedResults.slice(0, 5).forEach((r, idx) => {
+                        setTimeout(() => {
+                            showToast(`Profile ${idx + 1}: ${r.message}`, 'error');
+                        }, (idx + 1) * 500);
+                    });
+
+                    if (failedResults.length > 5) {
+                        setTimeout(() => {
+                            showToast(`... and ${failedResults.length - 5} more failed`, 'error');
+                        }, 3500);
+                    }
+                } else {
+                    showToast(`Done! ${successCount}/${ids.length} profiles fetched successfully`, 'success');
+                }
 
                 // Log kết quả
                 console.log('=== BATCH FETCH RESULTS ===');
                 result.results.forEach((r, idx) => {
-                    console.log(`${idx + 1}. ${r.profileId}: ${r.success ? r.onHoldAmount : 'FAILED - ' + r.message}`);
+                    console.log(`${idx + 1}. [${r.profile_name || 'N/A'}] ${r.profile_id || r.profileId}: ${r.success ? r.on_hold_amount : 'FAILED - ' + r.message}`);
                 });
             }
 
@@ -1059,6 +1170,7 @@
             const delay = (parseInt(document.getElementById('delayInput').value) || 3) * 1000;
             const btn = document.getElementById('fetchAllBtn');
             const ids = filteredProfiles.map(p => p.id);
+            const profilesToFetch = filteredProfiles.map(p => ({ id: p.id, name: p.name || '' }));
 
             btn.disabled = true;
             btn.innerHTML = `<i data-lucide="loader-2" class="spin"></i> Fetching All...`;
@@ -1066,9 +1178,9 @@
 
             document.getElementById('progressContainer').classList.add('active');
 
-            showToast(`Fetching TikTok data from ALL ${ids.length} profiles...`, 'info');
+            showToast(`Fetching TikTok data from ALL ${profilesToFetch.length} profiles...`, 'info');
 
-            const result = await ipcRenderer.invoke('batch-fetch-tiktok', ids, delay);
+            const result = await ipcRenderer.invoke('batch-fetch-tiktok', profilesToFetch, delay);
 
             btn.disabled = false;
             btn.innerHTML = `<i data-lucide="download"></i> Fetch All`;
@@ -1081,7 +1193,7 @@
                 // Log kết quả
                 console.log('=== BATCH FETCH ALL RESULTS ===');
                 result.results.forEach((r, idx) => {
-                    console.log(`${idx + 1}. ${r.profileId}: ${r.success ? r.onHoldAmount : 'FAILED - ' + r.message}`);
+                    console.log(`${idx + 1}. [${r.profile_name || 'N/A'}] ${r.profile_id || r.profileId}: ${r.success ? r.on_hold_amount : 'FAILED - ' + r.message}`);
                 });
             }
 
@@ -1105,7 +1217,8 @@
             if (data.status === 'success') statusIcon = '✓';
             else if (data.status === 'error') statusIcon = '✗';
 
-            document.getElementById('progressText').innerText = `${statusIcon} Fetching ${data.current}/${data.total}: ${data.profileId}`;
+            const pId = data.profile_id || data.profileId;
+            document.getElementById('progressText').innerText = `${statusIcon} Fetching ${data.current}/${data.total}: ${pId}`;
         });
 
         function showToast(msg, type = 'info') {

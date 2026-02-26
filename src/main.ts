@@ -4,6 +4,7 @@ import axios from 'axios';
 import puppeteer from 'puppeteer-core';
 import { loginTikTokSeller } from './tiktok-login';
 import { getCredentialsByProfileId, getCredentialsByProfileName, readAllCredentials, loadCredentialsFromExcel, loadCredentialsFromExcelBuffer } from './credentials-reader';
+import { saveTikTokDataToDB } from './db';
 
 const API_BASE = 'http://127.0.0.1:2268';
 
@@ -66,11 +67,17 @@ interface TikTokFinanceResult {
     oecSellerId: string;
     financeData: any;
     paymentData?: any;
-    monthlyData?: { date_time_lower: number; date_time_upper: number; settlement: string }[];
+    monthlyData?: { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[];
+    bankAccountNumber?: string;
+    beneficiaryName?: string;
+    netEarning?: string;
     summary?: {
+        netEarning: string;
         onHoldAmount: string;
         sumAmount: string;
-        monthly?: { date_time_lower: number; date_time_upper: number; settlement: string }[];
+        bankAccountNumber?: string;
+        beneficiaryName?: string;
+        monthly?: { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[];
     };
     profileName?: string;
 }
@@ -159,15 +166,20 @@ async function fetchTikTokDataFast(debugPort: number, profileId: string): Promis
         console.log('[Fast] Navigating to TikTok Seller Center...');
         await page.goto('https://seller-us.tiktok.com/finance/bills?lng=en&shop_region=US&subTab=on-hold&tab=overview', {
             waitUntil: 'domcontentloaded',
-            timeout: 30000
+            timeout: 15000
         });
 
         // Bước 2.1: Chủ động tìm seller_id ngay lập tức (Logic "Săn mồi")
-        // Bước 2.1: Chủ động tìm seller_id ngay lập tức (Logic "Săn mồi")
-        const deadline = Date.now() + 30000; // Tăng timeout lên 30s cho chắc
+        const deadline = Date.now() + 15000; // 15s timeout
 
         // Chờ 2s để trang ổn định sau khi goto
         await new Promise(r => setTimeout(r, 2000));
+
+        // CHECK: Nếu bị redirect về trang login -> account chưa đăng nhập
+        const currentUrlCheck = page.url();
+        if (currentUrlCheck.includes('/login') || currentUrlCheck.includes('/account/login')) {
+            throw new Error('NOT_LOGGED_IN:This profile is not logged into TikTok. Please log in first!');
+        }
 
         while (!sellerInfo && Date.now() < deadline) {
             try {
@@ -236,6 +248,21 @@ async function fetchTikTokDataFast(debugPort: number, profileId: string): Promis
         const errorMsg = error.message || '';
         console.error('[Fast] Browser error:', errorMsg);
 
+        // Cleanup Puppeteer first
+        if (page) try { await page.close(); } catch (e) { }
+        if (browser) try { await browser.disconnect(); } catch (e) { }
+
+        // IMPORTANT: Re-throw NOT_LOGGED_IN immediately so batch can handle it
+        if (errorMsg.includes('NOT_LOGGED_IN')) {
+            // Stop profile before re-throwing
+            try {
+                console.log(`[Fast] Stopping profile ${profileId}...`);
+                await axios.post(`${API_BASE}/profiles/stop/${profileId}`);
+                console.log('[Fast] ✓ Browser CLOSED via Hidemyacc API');
+            } catch (e) { }
+            throw error; // Re-throw original error
+        }
+
         // Lưu lỗi cụ thể để throw sau
         if (errorMsg.includes('ERR_PROXY_CONNECTION_FAILED')) {
             lastNetworkError = '⚠ Proxy dead/unavailable';
@@ -246,10 +273,6 @@ async function fetchTikTokDataFast(debugPort: number, profileId: string): Promis
         } else if (errorMsg.includes('ERR_NAME_NOT_RESOLVED')) {
             lastNetworkError = '⚠ DNS resolution failed';
         }
-
-        // Cleanup Puppeteer
-        if (page) try { await page.close(); } catch (e) { }
-        if (browser) try { await browser.disconnect(); } catch (e) { }
     }
 
     // Bước 4.5: GỌI API STOP ĐỂ ĐÓNG BROWSER HIDEMYACC
@@ -290,33 +313,34 @@ async function fetchTikTokDataFast(debugPort: number, profileId: string): Promis
 
     const statResponse = await axios.get(statApiUrl, { headers, timeout: 10000 });
     const financeData = statResponse.data;
-    const onHoldAmount = financeData?.data?.to_settle_amount_stat?.amount?.format_with_symbol || 'N/A';
+    const onHoldAmount = financeData?.data?.to_settle_amount_stat?.amount?.format_with_symbol || '';
 
     console.log(`[Fast] ✓ API 1 (Stat Info) - On Hold: ${onHoldAmount}`);
 
     // API 2: Payment List (Sum Amount - Tổng tiền đã thanh toán)
-    const paymentApiUrl = `https://seller-us.tiktok.com/api/v1/pay/statement/payment/list?locale=en&language=en&oec_seller_id=${oecSellerId}&seller_id=${sellerId}&aid=4068&app_name=i18n_ecom_shop&device_platform=web&timezone_name=America%2FLos_Angeles&pagination_type=1&from=0&size=10&need_total_amount=true&page_type=2`;
+    const paymentApiUrl = `https://seller-us.tiktok.com/api/v1/pay/statement/payment/list?locale=en&language=en&oec_seller_id=${oecSellerId}&seller_id=${sellerId}&aid=4068&app_name=i18n_ecom_shop&device_platform=web&timezone_name=America%2FLos_Angeles&pagination_type=1&from=0&size=9999&need_total_amount=true&page_type=2`;
 
     let paymentData: any = null;
-    let sumAmount = 'N/A';
+    let sumAmount = '';
     try {
         const paymentResponse = await axios.get(paymentApiUrl, { headers, timeout: 10000 });
         paymentData = paymentResponse.data;
-        sumAmount = paymentData?.data?.sum_amount?.format_with_symbol || 'N/A';
+        sumAmount = paymentData?.data?.sum_amount?.format_with_symbol || '';
         console.log(`[Fast] ✓ API 2 (Payment List) - Sum Amount: ${sumAmount}`);
     } catch (e: any) {
         console.log(`[Fast] ⚠ API 2 failed: ${e.message}`);
     }
 
-    // API 3: Monthly Settlement (Tháng hiện tại + các tháng trước + năm ngoái)
+    // API 3: Monthly Settlement (Tháng hiện tại + các tháng trước + 2 năm ngoái)
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth(); // 0-indexed (0 = Jan, 1 = Feb, ...)
     const prevYear = currentYear - 1;
+    const prevYear2 = currentYear - 2;
 
-    const monthlyData: { date_time_lower: number; date_time_upper: number; settlement: string }[] = [];
+    const monthlyData: { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[] = [];
 
-    console.log(`[Fast] Fetching monthly data: ${prevYear} (12 months) + ${currentYear} (${currentMonth + 1} months)...`);
+    console.log(`[Fast] Fetching monthly data: ${prevYear2} (12m) + ${prevYear} (12m) + ${currentYear} (${currentMonth + 1}m)...`);
 
     // Helper function để tính timestamp cho 1 tháng (PST timezone)
     const getMonthTimestamps = (year: number, month: number) => {
@@ -328,20 +352,46 @@ async function fetchTikTokDataFast(debugPort: number, profileId: string): Promis
         return { lower: startDate.getTime(), upper: endDate.getTime() };
     };
 
+    // Helper format "DD/MM/YYYY" từ timestamp
+    const formatTimestamp = (ts: number): string => {
+        const d = new Date(ts);
+        // Lưu ý: Timestamp trên đã tính theo UTC để giả lập PST, nên dùng getUTCDate/Month/FullYear
+        // Tuy nhiên ở đây `getMonthTimestamps` dùng logic UTC fake PST, nên getUTC là hợp lý để lấy lại đúng ngày đã set.
+        return `${d.getUTCDate().toString().padStart(2, '0')}/${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCFullYear()}`;
+    };
+
     // Helper function để fetch 1 tháng
     const fetchMonth = async (year: number, month: number) => {
         const { lower, upper } = getMonthTimestamps(year, month);
+
+        // Format: "MM/YYYY" (e.g. 02/2026)
+        const monthLabel = `${(month + 1).toString().padStart(2, '0')}/${year}`;
+
+        // Format dates: "DD/MM/YYYY"
+        const lowerLabel = formatTimestamp(lower);
+        const upperLabel = formatTimestamp(upper);
+
         try {
             const monthlyApiUrl = `https://seller-us.tiktok.com/api/v1/pay/statement/stat/info?locale=en&language=en&oec_seller_id=${oecSellerId}&seller_id=${sellerId}&aid=4068&app_name=i18n_ecom_shop&device_platform=web&timezone_name=America%2FLos_Angeles&amount_stat_type=5&date_time_lower=${lower}&date_time_upper=${upper}&time_type=2&terminal_type=1&statement_version=1`;
 
             const response = await axios.get(monthlyApiUrl, { headers, timeout: 10000 });
             const settlement = response.data?.data?.finance_report_stat?.total_settlement?.format_with_symbol || '$0';
 
-            return { date_time_lower: lower, date_time_upper: upper, settlement };
+            return { month: monthLabel, date_time_lower: lowerLabel, date_time_upper: upperLabel, settlement };
         } catch (e: any) {
-            return { date_time_lower: lower, date_time_upper: upper, settlement: 'Error' };
+            return { month: monthLabel, date_time_lower: lowerLabel, date_time_upper: upperLabel, settlement: 'Error' };
         }
     };
+
+    // 0. Lấy 12 tháng 2 năm ngoái (Jan - Dec prevYear2)
+    for (let month = 0; month < 12; month++) {
+        const data = await fetchMonth(prevYear2, month);
+        monthlyData.push(data);
+        if (data.settlement !== '$0' && data.settlement !== 'Error') {
+            const monthName = new Date(prevYear2, month).toLocaleString('en', { month: 'short' });
+            console.log(`[Fast]   ${monthName} ${prevYear2}: ${data.settlement}`);
+        }
+    }
 
     // 1. Lấy 12 tháng năm ngoái (Jan - Dec prevYear)
     for (let month = 0; month < 12; month++) {
@@ -364,7 +414,37 @@ async function fetchTikTokDataFast(debugPort: number, profileId: string): Promis
     }
 
     console.log(`[Fast] ✓ API 3 (Monthly) - Done (${monthlyData.length} months)`);
-    console.log(`[Fast] ✓ Complete! On Hold: ${onHoldAmount}, Total Paid: ${sumAmount}`);
+
+    // API 4: Bank Account Info
+    const bankApiUrl = `https://seller-us.tiktok.com/api/v1/seller/settlement/account/get?locale=en&language=en&oec_seller_id=${oecSellerId}&seller_id=${sellerId}&aid=4068&app_name=i18n_ecom_shop&device_platform=web`;
+
+    let bankAccountNumber = '';
+    let beneficiaryName = '';
+    try {
+        const bankResponse = await axios.get(bankApiUrl, { headers, timeout: 15000 });
+        bankAccountNumber = bankResponse.data?.data?.bank_account_number || '';
+        beneficiaryName = bankResponse.data?.data?.beneficiary_name || '';
+        console.log(`[Fast] ✓ API 4 (Bank Account) - Account: ${bankAccountNumber}`);
+    } catch (e: any) {
+        console.log(`[Fast] ⚠ API 4 (Bank) failed: ${e.message}`);
+    }
+
+    // API 5: Net Earning (Account Balance)
+    const acquiringApiUrl = `https://seller-us.tiktok.com/api/v1/finance/acquiring/query/account?locale=en&language=en&oec_seller_id=${oecSellerId}&seller_id=${sellerId}&app_id=4068&aid=4068&app_name=i18n_ecom_shop&device_platform=web&timezone_name=America%2FLos_Angeles`;
+
+    let netEarning = '';
+    try {
+        const acquiringResponse = await axios.post(acquiringApiUrl, { biz_scene: 10, user_type: 1 }, { headers, timeout: 10000 });
+        const balances = acquiringResponse.data?.data?.user_account_balance;
+        if (Array.isArray(balances) && balances.length > 0) {
+            netEarning = balances[0]?.total_balance?.format_with_symbol || '';
+        }
+        console.log(`[Fast] ✓ API 5 (Net Earning) - Amount: ${netEarning}`);
+    } catch (e: any) {
+        console.log(`[Fast] ⚠ API 5 (Net Earning) failed: ${e.message}`);
+    }
+
+    console.log(`[Fast] ✓ Complete! Net Earning: ${netEarning}, On Hold: ${onHoldAmount}, Total Paid: ${sumAmount}`);
 
     return {
         sellerId,
@@ -372,10 +452,16 @@ async function fetchTikTokDataFast(debugPort: number, profileId: string): Promis
         financeData,
         paymentData,
         monthlyData,
+        bankAccountNumber,
+        beneficiaryName,
+        netEarning,
         // Thêm summary cho tiện dùng
         summary: {
+            netEarning,
             onHoldAmount,
             sumAmount,
+            bankAccountNumber,
+            beneficiaryName,
             monthly: monthlyData
         }
     };
@@ -486,10 +572,10 @@ async function fetchTikTokFinanceData(debugPort: number): Promise<TikTokFinanceR
 
         // Extract giá trị On Hold amount
         const financeData = result.financeData;
-        const toSettleAmount = financeData?.data?.to_settle_amount_stat?.amount?.amount || 'N/A';
-        const toSettleFormatted = financeData?.data?.to_settle_amount_stat?.amount?.format_with_symbol || 'N/A';
-        const settlementDays = financeData?.data?.seller_quality_stat?.bill_finish_period_in_days || 'N/A';
-        const reserveLevel = financeData?.data?.seller_reserve_stat?.seller_reserve_level || 'N/A';
+        const toSettleAmount = financeData?.data?.to_settle_amount_stat?.amount?.amount || '';
+        const toSettleFormatted = financeData?.data?.to_settle_amount_stat?.amount?.format_with_symbol || '';
+        const settlementDays = financeData?.data?.seller_quality_stat?.bill_finish_period_in_days || '';
+        const reserveLevel = financeData?.data?.seller_reserve_stat?.seller_reserve_level || '';
 
         // Log data ra console
         console.log('[TikTok] ========== RESULT ==========');
@@ -554,6 +640,13 @@ app.on('activate', () => {
 // Helper
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper: Clean error message for user display
+function cleanErrorMessage(msg: string): string {
+    if (!msg) return 'Unknown error';
+    // Remove internal prefixes
+    return msg.replace('NOT_LOGGED_IN:', '').trim();
+}
+
 // API: Lấy danh sách profiles
 ipcMain.handle('get-profiles', async () => {
     try {
@@ -588,9 +681,10 @@ ipcMain.handle('upload-credentials-excel', async (_event, fileBuffer: Uint8Array
 // ============================================
 // API: Auto-login TikTok Seller Center
 // ============================================
-ipcMain.handle('login-tiktok', async (_event, profileId: string, profileName?: string) => {
+// Helper: Run Login Flow (reusable)
+async function runLoginFlow(profileId: string, profileName?: string): Promise<{ success: boolean; message: string; port?: number }> {
     try {
-        console.log(`[Login] Starting login for profile ${profileId}...`);
+        console.log(`[Login] Starting login flow for profile ${profileId}...`);
 
         // Step 0: Get credentials - Try by NAME first (exact match), then by ID
         let credentials = null;
@@ -619,7 +713,9 @@ ipcMain.handle('login-tiktok', async (_event, profileId: string, profileName?: s
         try {
             const startResponse = await axios.post<ApiResponse<StartProfileData>>(`${API_BASE}/profiles/start/${profileId}`);
             if (startResponse.data.code !== 1 || !startResponse.data.data.success) {
-                throw new Error('Failed to start profile');
+                const msg = (startResponse.data as any).message || 'Failed to start profile';
+                if (msg.includes('in use')) throw { response: { status: 400 } }; // Simulate 400 for logic below
+                throw new Error(msg);
             }
             port = startResponse.data.data.port;
             console.log(`[Login] Profile started on port ${port}`);
@@ -670,7 +766,8 @@ ipcMain.handle('login-tiktok', async (_event, profileId: string, profileName?: s
                 maxWindows: MAX_WINDOWS
             });
 
-            return result;
+            // Return port alongside result for reuse
+            return { ...result, port };
         } finally {
             // Release position after login (success or fail)
             releaseWindowPosition(windowIndex);
@@ -680,6 +777,13 @@ ipcMain.handle('login-tiktok', async (_event, profileId: string, profileName?: s
         console.error('[Login] Error:', error.message);
         return { success: false, message: error.message };
     }
+}
+
+// ============================================
+// API: Auto-login TikTok Seller Center
+// ============================================
+ipcMain.handle('login-tiktok', async (_event, profileId: string, profileName?: string) => {
+    return runLoginFlow(profileId, profileName);
 });
 
 // API: Chạy 1 profile
@@ -794,7 +898,8 @@ ipcMain.handle('fetch-tiktok-data', async (_event, debugPort: number) => {
 });
 
 // API: Chạy profile VÀ lấy TikTok data (tự động)
-ipcMain.handle('run-and-fetch-tiktok', async (_event, profileId: string) => {
+ipcMain.handle('run-and-fetch-tiktok', async (_event, profileId: string, profileName: string = '') => {
+    const fetchStartTime = Date.now();
     try {
         console.log(`[Auto] Starting profile ${profileId} and fetching TikTok data...`);
 
@@ -842,20 +947,145 @@ ipcMain.handle('run-and-fetch-tiktok', async (_event, profileId: string) => {
 
         // Bước 3: Lấy TikTok data bằng FAST approach
         console.log('[Auto] Fetching TikTok Finance data (Fast Mode)...');
-        const tiktokData = await fetchTikTokDataFast(port!, profileId);
 
-        return {
-            success: true,
-            port,
-            tiktokData,
-            message: `Hoàn tất! On Hold: ${tiktokData.summary?.onHoldAmount}, Paid: ${tiktokData.summary?.sumAmount}`
-        };
+        try {
+            const tiktokData = await fetchTikTokDataFast(port!, profileId);
+            const monthlyData = tiktokData.summary?.monthly as { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[] || [];
+
+            // Return JSON format giống batch
+            const result = {
+                success: true,
+                profile_id: profileId,
+                profile_name: profileName,
+                net_earning: tiktokData.summary?.netEarning || '',
+                on_hold_amount: tiktokData.summary?.onHoldAmount || '',
+                sum_amount: tiktokData.summary?.sumAmount || '',
+                bank_account_number: tiktokData.summary?.bankAccountNumber || '',
+                beneficiary_name: tiktokData.summary?.beneficiaryName || '',
+                monthly_data: monthlyData,
+                message: `Hoàn tất! Net: ${tiktokData.summary?.netEarning}, On Hold: ${tiktokData.summary?.onHoldAmount}, Paid: ${tiktokData.summary?.sumAmount}`
+            };
+
+            // Log JSON result
+            console.log('\n[Auto] ========== JSON RESULT ==========');
+            console.log(JSON.stringify(result, null, 2));
+            console.log('[Auto] ==================================\n');
+
+            // Save to DB
+            try {
+                await saveTikTokDataToDB({
+                    profileId,
+                    profileName,
+                    sellerId: tiktokData.sellerId,
+                    bankAccountNumber: tiktokData.bankAccountNumber,
+                    beneficiaryName: tiktokData.beneficiaryName,
+                    netEarning: result.net_earning,
+                    onHoldAmount: result.on_hold_amount,
+                    sumAmount: result.sum_amount,
+                    monthlyData: monthlyData,
+                    status: 'success',
+                    durationMs: Date.now() - fetchStartTime
+                });
+            } catch (dbErr: any) {
+                console.error('[Auto] DB save error:', dbErr.message);
+            }
+
+            return result;
+        } catch (fetchError: any) {
+            const errorMsg = fetchError.message || '';
+
+            // Handle NOT_LOGGED_IN: Try auto-login then retry
+            if (errorMsg.includes('NOT_LOGGED_IN')) {
+                console.log(`[Auto] 🔐 Profile not logged in, invoking login flow...`);
+
+                // Profile already stopped by fetchTikTokDataFast, wait a bit
+                await sleep(2000);
+
+                // Call full login flow
+                const loginResult = await runLoginFlow(profileId);
+
+                if (loginResult.success && loginResult.port) {
+                    console.log(`[Auto] ✓ Login successful! Retrying fetch...`);
+
+                    // Retry fetch with new port
+                    const tiktokData = await fetchTikTokDataFast(loginResult.port, profileId);
+                    const monthlyData = tiktokData.summary?.monthly as { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[] || [];
+
+                    const result = {
+                        success: true,
+                        profile_id: profileId,
+                        profile_name: profileName,
+                        net_earning: tiktokData.summary?.netEarning || '',
+                        on_hold_amount: tiktokData.summary?.onHoldAmount || '',
+                        sum_amount: tiktokData.summary?.sumAmount || '',
+                        bank_account_number: tiktokData.summary?.bankAccountNumber || '',
+                        beneficiary_name: tiktokData.summary?.beneficiaryName || '',
+                        monthly_data: monthlyData,
+                        message: `✓ Auto-logged in & fetched! Net: ${tiktokData.summary?.netEarning}, On Hold: ${tiktokData.summary?.onHoldAmount}`
+                    };
+
+                    // Log JSON result
+                    console.log('\n[Auto] ========== JSON RESULT ==========');
+                    console.log(JSON.stringify(result, null, 2));
+                    console.log('[Auto] ==================================\n');
+
+                    // Save to DB
+                    try {
+                        await saveTikTokDataToDB({
+                            profileId,
+                            profileName,
+                            sellerId: tiktokData.sellerId,
+                            bankAccountNumber: tiktokData.bankAccountNumber,
+                            beneficiaryName: tiktokData.beneficiaryName,
+                            netEarning: result.net_earning,
+                            onHoldAmount: result.on_hold_amount,
+                            sumAmount: result.sum_amount,
+                            monthlyData: monthlyData,
+                            status: 'success',
+                            durationMs: Date.now() - fetchStartTime
+                        });
+                    } catch (dbErr: any) {
+                        console.error('[Auto] DB save error (retry):', dbErr.message);
+                    }
+
+                    return result;
+                } else {
+                    // Login failed - return clean message
+                    return {
+                        success: false,
+                        profile_id: profileId,
+                        message: loginResult.message || 'Auto-login failed'
+                    };
+                }
+            }
+
+            // Other errors - re-throw
+            throw fetchError;
+        }
 
     } catch (error: any) {
         console.error('[Auto] Error:', error.message);
+
+        // Log failed fetch to DB
+        const failStatus = error.message?.includes('NOT_LOGGED_IN') ? 'not_logged_in' as const
+            : error.message?.includes('timeout') || error.message?.includes('TIMED_OUT') ? 'timeout' as const
+                : 'failed' as const;
+        try {
+            await saveTikTokDataToDB({
+                profileId,
+                profileName,
+                status: failStatus,
+                errorMessage: error.message,
+                durationMs: Date.now() - fetchStartTime
+            });
+        } catch (dbErr: any) {
+            console.error('[Auto] DB log error:', dbErr.message);
+        }
+
         return {
             success: false,
-            message: error.message
+            profile_id: profileId,
+            message: cleanErrorMessage(error.message)
         };
     }
 });
@@ -863,19 +1093,21 @@ ipcMain.handle('run-and-fetch-tiktok', async (_event, profileId: string) => {
 // ============================================
 // API: Batch Fetch TikTok data từ nhiều profiles
 // ============================================
-ipcMain.handle('batch-fetch-tiktok', async (_event, profileIds: string[], delayMs: number) => {
+ipcMain.handle('batch-fetch-tiktok', async (_event, profilesToFetch: { id: string; name: string }[], delayMs: number) => {
     const results: {
-        profileId: string;
-        profileName?: string;
+        profile_id: string;
+        profile_name?: string;
         success: boolean;
-        sellerId?: string;
-        onHoldAmount?: string;
-        sumAmount?: string;
-        monthlyData?: { date_time_lower: number; date_time_upper: number; settlement: string }[];
+        net_earning?: string;
+        on_hold_amount?: string;
+        sum_amount?: string;
+        bank_account_number?: string;
+        beneficiary_name?: string;
+        monthly_data?: { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[];
         message: string;
     }[] = [];
 
-    console.log(`[Batch] Starting batch fetch for ${profileIds.length} profiles...`);
+    console.log(`[Batch] Starting batch fetch for ${profilesToFetch.length} profiles...`);
 
     // ===============================================
     // CẤU HÌNH CONCURRENCY (SỐ LUỒNG CHẠY SONG SONG)
@@ -883,14 +1115,16 @@ ipcMain.handle('batch-fetch-tiktok', async (_event, profileIds: string[], delayM
     const CHUNK_SIZE = 3; // Giảm xuống 3 để ổn định hơn
     const MAX_RETRIES = 1; // Retry 1 lần nếu fail
 
-    console.log(`[Batch] Starting batch fetch for ${profileIds.length} profiles (Parallel: ${CHUNK_SIZE}, Retries: ${MAX_RETRIES})...`);
+    console.log(`[Batch] Starting batch fetch for ${profilesToFetch.length} profiles (Parallel: ${CHUNK_SIZE}, Retries: ${MAX_RETRIES})...`);
 
     // Helper function để xử lý 1 profile đơn lẻ (có retry)
-    const processProfile = async (profileId: string, index: number, retryCount = 0): Promise<typeof results[0]> => {
-        try {
-            console.log(`\n[Batch] ▶ Start Profile ${index + 1}: ${profileId}${retryCount > 0 ? ` (Retry ${retryCount})` : ''}`);
+    const processProfile = async (profileId: string, profileName: string, index: number, retryCount = 0): Promise<typeof results[0]> => {
+        let port: number = 0;
+        const profileStartTime = Date.now();
 
-            let port: number;
+        try {
+            console.log(`\n[Batch] ▶ Start Profile ${index + 1}: ${profileId} - ${profileName}${retryCount > 0 ? ` (Retry ${retryCount})` : ''}`);
+
 
             // 1. Khởi động profile (với xử lý 409/400)
             try {
@@ -919,7 +1153,7 @@ ipcMain.handle('batch-fetch-tiktok', async (_event, profileIds: string[], delayM
                 }
                 // 400: Profile đang được sử dụng bởi user khác - SKIP (không retry)
                 else if (statusCode === 400) {
-                    return { profileId, success: false, message: '⚠ Skipped - Profile in use by another user' };
+                    return { profile_id: profileId, success: false, message: '⚠ Skipped - Profile in use by another user' };
                 }
                 else {
                     throw startError;
@@ -931,59 +1165,166 @@ ipcMain.handle('batch-fetch-tiktok', async (_event, profileIds: string[], delayM
             const tiktokData = await fetchTikTokDataFast(port!, profileId);
 
             // 3. Kết quả - Dùng summary từ function
-            const onHoldAmount = tiktokData.summary?.onHoldAmount || 'N/A';
-            const sumAmount = tiktokData.summary?.sumAmount || 'N/A';
-            const monthlyData = tiktokData.summary?.monthly || [];
+            const onHoldAmount = tiktokData.summary?.onHoldAmount || '';
+            const sumAmount = tiktokData.summary?.sumAmount || '';
+            const monthlyData = tiktokData.summary?.monthly as { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[] || [];
 
-            return {
-                profileId,
+            const profileResult = {
+                profile_id: profileId,
                 success: true,
-                sellerId: tiktokData.sellerId,
-                onHoldAmount,
-                sumAmount,
-                monthlyData,
+                profile_name: profileName,
+                net_earning: tiktokData.summary?.netEarning || '',
+                on_hold_amount: onHoldAmount,
+                sum_amount: sumAmount,
+                bank_account_number: tiktokData.summary?.bankAccountNumber || '',
+                beneficiary_name: tiktokData.summary?.beneficiaryName || '',
+                monthly_data: monthlyData,
                 message: `Data retrieval successful`
             };
 
+            // Save to DB
+            try {
+                await saveTikTokDataToDB({
+                    profileId,
+                    profileName,
+                    sellerId: tiktokData.sellerId,
+                    bankAccountNumber: tiktokData.bankAccountNumber,
+                    beneficiaryName: tiktokData.beneficiaryName,
+                    netEarning: profileResult.net_earning,
+                    onHoldAmount: profileResult.on_hold_amount,
+                    sumAmount: profileResult.sum_amount,
+                    monthlyData: monthlyData,
+                    status: 'success',
+                    durationMs: Date.now() - profileStartTime
+                });
+            } catch (dbErr: any) {
+                console.error(`[Batch] DB save error for ${profileId}:`, dbErr.message);
+            }
+
+            return profileResult;
+
         } catch (error: any) {
-            console.error(`[Batch] ✗ Error ${profileId}:`, error.message);
+            const errorMsg = error.message || 'Unknown error';
+            console.error(`[Batch] ✗ Error ${profileId}:`, errorMsg);
+
+            // CASE 1: NOT_LOGGED_IN → Thử auto-login rồi fetch lại
+            if (errorMsg.includes('NOT_LOGGED_IN')) {
+                console.log(`[Batch] 🔐 Profile not logged in, invoking full login flow...`);
+
+                // Ensure profile is stopped before starting login flow (standardize state)
+                try { await axios.post(`${API_BASE}/profiles/stop/${profileId}`); } catch (e) { }
+                await sleep(2000);
+
+                // Call the full login flow (restarts profile, finds creds, logins)
+                const loginResult = await runLoginFlow(profileId);
+
+                if (loginResult.success && loginResult.port) {
+                    console.log(`[Batch] ✓ Login flow completed! Retrying fetch...`);
+
+                    // Retry fetch using the port from login result (profile is open)
+                    const tiktokData = await fetchTikTokDataFast(loginResult.port, profileId);
+
+                    const onHoldAmount = tiktokData.summary?.onHoldAmount || '';
+                    const sumAmount = tiktokData.summary?.sumAmount || '';
+                    const monthlyData = tiktokData.summary?.monthly as { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[] || [];
+
+                    const loginFetchResult = {
+                        profile_id: profileId,
+                        success: true,
+                        profile_name: profileName,
+                        net_earning: tiktokData.summary?.netEarning || '',
+                        on_hold_amount: onHoldAmount,
+                        sum_amount: sumAmount,
+                        bank_account_number: tiktokData.summary?.bankAccountNumber || '',
+                        beneficiary_name: tiktokData.summary?.beneficiaryName || '',
+                        monthly_data: monthlyData,
+                        message: `✓ Auto-logged in & fetched data`
+                    };
+
+                    // Save to DB
+                    try {
+                        await saveTikTokDataToDB({
+                            profileId,
+                            profileName,
+                            sellerId: tiktokData.sellerId,
+                            bankAccountNumber: tiktokData.bankAccountNumber,
+                            beneficiaryName: tiktokData.beneficiaryName,
+                            netEarning: loginFetchResult.net_earning,
+                            onHoldAmount: loginFetchResult.on_hold_amount,
+                            sumAmount: loginFetchResult.sum_amount,
+                            monthlyData: monthlyData,
+                            status: 'success',
+                            durationMs: Date.now() - profileStartTime
+                        });
+                    } catch (dbErr: any) {
+                        console.error(`[Batch] DB save error (login-retry) for ${profileId}:`, dbErr.message);
+                    }
+
+                    return loginFetchResult;
+                } else {
+                    // Login failed
+                    try { await axios.post(`${API_BASE}/profiles/stop/${profileId}`); } catch (e) { }
+                    return {
+                        profile_id: profileId,
+                        success: false,
+                        message: `🔐 Auto-login failed: ${loginResult.message}`
+                    };
+                }
+            }
+
+            // CASE 2: Profile "in use" → Skip (không retry)
+            if (errorMsg.includes('Skipped') || errorMsg.includes('in use')) {
+                return { profile_id: profileId, success: false, message: errorMsg };
+            }
+
             // Cố gắng stop profile nếu lỗi giữa chừng
             try { await axios.post(`${API_BASE}/profiles/stop/${profileId}`); } catch (e) { }
 
-            // Không retry nếu là lỗi "in use"
-            if (error.message.includes('Skipped') || error.message.includes('in use')) {
-                return { profileId, success: false, message: error.message };
-            }
-
-            // RETRY LOGIC
+            // CASE 3: Các lỗi khác → Retry
             if (retryCount < MAX_RETRIES) {
                 console.log(`[Batch] Retrying ${profileId} in 5s...`);
                 await sleep(5000);
-                return processProfile(profileId, index, retryCount + 1);
+                return processProfile(profileId, profileName, index, retryCount + 1);
             }
 
-            return { profileId, success: false, message: error.message };
+            // Log failed fetch to DB
+            const batchFailStatus = errorMsg.includes('NOT_LOGGED_IN') ? 'not_logged_in' as const
+                : errorMsg.includes('timeout') || errorMsg.includes('TIMED_OUT') ? 'timeout' as const
+                    : 'failed' as const;
+            try {
+                await saveTikTokDataToDB({
+                    profileId,
+                    profileName,
+                    status: batchFailStatus,
+                    errorMessage: errorMsg,
+                    durationMs: Date.now() - profileStartTime
+                });
+            } catch (dbErr: any) {
+                console.error(`[Batch] DB log error for ${profileId}:`, dbErr.message);
+            }
+
+            return { profile_id: profileId, success: false, message: cleanErrorMessage(errorMsg) };
         }
     };
 
     // CHẠY THEO TỪNG NHÓM (CHUNK) VỚI STAGGERED START
-    for (let i = 0; i < profileIds.length; i += CHUNK_SIZE) {
-        const chunk = profileIds.slice(i, i + CHUNK_SIZE);
-        console.log(`\n[Batch] === Processing Chunk ${Math.floor(i / CHUNK_SIZE) + 1} (Profiles ${i + 1}-${Math.min(i + CHUNK_SIZE, profileIds.length)}) ===`);
+    for (let i = 0; i < profilesToFetch.length; i += CHUNK_SIZE) {
+        const chunk = profilesToFetch.slice(i, i + CHUNK_SIZE);
+        console.log(`\n[Batch] === Processing Chunk ${Math.floor(i / CHUNK_SIZE) + 1} (Profiles ${i + 1}-${Math.min(i + CHUNK_SIZE, profilesToFetch.length)}) ===`);
 
         // Gửi status update
         mainWindow?.webContents.send('fetch-progress', {
             current: i,
-            total: profileIds.length,
+            total: profilesToFetch.length,
             profileId: `Chunk ${Math.floor(i / CHUNK_SIZE) + 1} running...`,
             status: 'running'
         });
 
         // Chạy song song nhưng stagger start (delay 1s giữa mỗi profile)
-        const chunkPromises = chunk.map((id, idx) => {
+        const chunkPromises = chunk.map((profile, idx) => {
             return new Promise<typeof results[0]>(async (resolve) => {
                 await sleep(idx * 1000); // Stagger: profile 0 start ngay, profile 1 đợi 1s, profile 2 đợi 2s...
-                const result = await processProfile(id, i + idx);
+                const result = await processProfile(profile.id, profile.name, i + idx);
                 resolve(result);
             });
         });
@@ -994,32 +1335,33 @@ ipcMain.handle('batch-fetch-tiktok', async (_event, profileIds: string[], delayM
 
         // Log và Gửi update cho từng item xong
         chunkResults.forEach(r => {
-            console.log(`[Batch] Finished: ${r.profileId} -> ${r.success ? r.onHoldAmount : r.message}`);
+            console.log(`[Batch] Finished: ${r.profile_id} -> ${r.success ? r.on_hold_amount : r.message}`);
             mainWindow?.webContents.send('fetch-progress', {
                 current: results.length,
-                total: profileIds.length,
-                profileId: r.profileId,
+                total: profilesToFetch.length,
+                profile_id: r.profile_id,
                 status: r.success ? 'success' : 'error',
                 result: r
             });
         });
 
-        // Delay nhẹ giữa các chunk để CPU thở
-        if (i + CHUNK_SIZE < profileIds.length) {
-            console.log('[Batch] Cooling down 2s...');
-            await sleep(2000);
+        // Delay nhẹ giữa các chunk để CPU thở (dùng delay từ UI, tối thiểu 2s)
+        if (i + CHUNK_SIZE < profilesToFetch.length) {
+            const waitTime = Math.max(delayMs, 2000);
+            console.log(`[Batch] Cooling down ${waitTime / 1000}s...`);
+            await sleep(waitTime);
         }
     }
 
     // Log tổng kết
     console.log('\n[Batch] ========== BATCH COMPLETE ==========');
-    console.log(`Total: ${profileIds.length} profiles`);
+    console.log(`Total: ${profilesToFetch.length} profiles`);
     console.log(`Success: ${results.filter(r => r.success).length}`);
     console.log(`Failed: ${results.filter(r => !r.success).length}`);
     console.log('');
     results.forEach((r, idx) => {
         const status = r.success ? '✓' : '✗';
-        console.log(`  ${idx + 1}. [${status}] ${r.profileId} - ${r.message}`);
+        console.log(`  ${idx + 1}. [${status}] ${r.profile_id} - ${r.message}`);
     });
     console.log('[Batch] ==========================================\n');
 
