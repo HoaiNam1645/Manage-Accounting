@@ -1,6 +1,6 @@
 {
   "name": "hidemyacc-runner",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "main": "dist/src/main.js",
   "scripts": {
     "build": "tsc",
