@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # 👈 QUAN TRỌNG: Cấp quyền dứt điểm cho TOKEN để tạo Release
 
     strategy:
       matrix:
@@ -29,11 +31,8 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
-      - name: Make distributables
-        run: npx electron-forge make
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      # Bỏ bước "Make distributables" vì nó bị lặp. 
+      # Bước Publish bên dưới đã tự động tích hợp việc Make rồi!
       - name: Publish to GitHub Releases
         run: npx electron-forge publish
         env:
