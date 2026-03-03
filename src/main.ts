@@ -1,14 +1,27 @@
-import { app, BrowserWindow, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, dialog } from 'electron';
 import * as path from 'path';
 import axios from 'axios';
 import puppeteer from 'puppeteer-core';
 import { loginTikTokSeller } from './tiktok-login';
 import { getCredentialsByProfileId, getCredentialsByProfileName, readAllCredentials, loadCredentialsFromExcel, loadCredentialsFromExcelBuffer } from './credentials-reader';
 import { saveTikTokDataToDB } from './db';
+import { updateElectronApp, UpdateSourceType } from 'update-electron-app';
 
 const API_BASE = 'http://127.0.0.1:2268';
 
 let mainWindow: BrowserWindow | null = null;
+
+// ============================================
+// AUTO-UPDATE CONFIGURATION
+// ============================================
+updateElectronApp({
+    updateSource: {
+        type: UpdateSourceType.ElectronPublicUpdateService,
+        repo: 'HoaiNam1645/Manage-Accounting',
+    },
+    updateInterval: '10 minutes',
+    notifyUser: true,
+});
 
 // Window arrangement tracking - use Set to avoid race conditions
 const usedWindowPositions = new Set<number>();
@@ -637,6 +650,16 @@ app.on('activate', () => {
     }
 });
 
+// ============================================
+// API: App Version (for UI display)
+// ============================================
+ipcMain.handle('get-app-version', async () => {
+    return {
+        version: app.getVersion(),
+        name: app.getName(),
+    };
+});
+
 // Helper
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -994,69 +1017,25 @@ ipcMain.handle('run-and-fetch-tiktok', async (_event, profileId: string, profile
         } catch (fetchError: any) {
             const errorMsg = fetchError.message || '';
 
-            // Handle NOT_LOGGED_IN: Try auto-login then retry
+            // Handle NOT_LOGGED_IN: Bỏ tự động login, trả về lỗi luôn
             if (errorMsg.includes('NOT_LOGGED_IN')) {
-                console.log(`[Auto] 🔐 Profile not logged in, invoking login flow...`);
+                console.log(`[Auto] ⚠ Profile not logged in.`);
 
-                // Profile already stopped by fetchTikTokDataFast, wait a bit
-                await sleep(2000);
+                try {
+                    await saveTikTokDataToDB({
+                        profileId,
+                        profileName,
+                        status: 'not_logged_in',
+                        errorMessage: '⚠ Account chưa đăng nhập TikTok Seller',
+                        durationMs: Date.now() - fetchStartTime
+                    });
+                } catch (dbErr: any) { }
 
-                // Call full login flow
-                const loginResult = await runLoginFlow(profileId);
-
-                if (loginResult.success && loginResult.port) {
-                    console.log(`[Auto] ✓ Login successful! Retrying fetch...`);
-
-                    // Retry fetch with new port
-                    const tiktokData = await fetchTikTokDataFast(loginResult.port, profileId);
-                    const monthlyData = tiktokData.summary?.monthly as { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[] || [];
-
-                    const result = {
-                        success: true,
-                        profile_id: profileId,
-                        profile_name: profileName,
-                        net_earning: tiktokData.summary?.netEarning || '',
-                        on_hold_amount: tiktokData.summary?.onHoldAmount || '',
-                        sum_amount: tiktokData.summary?.sumAmount || '',
-                        bank_account_number: tiktokData.summary?.bankAccountNumber || '',
-                        beneficiary_name: tiktokData.summary?.beneficiaryName || '',
-                        monthly_data: monthlyData,
-                        message: `✓ Auto-logged in & fetched! Net: ${tiktokData.summary?.netEarning}, On Hold: ${tiktokData.summary?.onHoldAmount}`
-                    };
-
-                    // Log JSON result
-                    console.log('\n[Auto] ========== JSON RESULT ==========');
-                    console.log(JSON.stringify(result, null, 2));
-                    console.log('[Auto] ==================================\n');
-
-                    // Save to DB
-                    try {
-                        await saveTikTokDataToDB({
-                            profileId,
-                            profileName,
-                            sellerId: tiktokData.sellerId,
-                            bankAccountNumber: tiktokData.bankAccountNumber,
-                            beneficiaryName: tiktokData.beneficiaryName,
-                            netEarning: result.net_earning,
-                            onHoldAmount: result.on_hold_amount,
-                            sumAmount: result.sum_amount,
-                            monthlyData: monthlyData,
-                            status: 'success',
-                            durationMs: Date.now() - fetchStartTime
-                        });
-                    } catch (dbErr: any) {
-                        console.error('[Auto] DB save error (retry):', dbErr.message);
-                    }
-
-                    return result;
-                } else {
-                    // Login failed - return clean message
-                    return {
-                        success: false,
-                        profile_id: profileId,
-                        message: loginResult.message || 'Auto-login failed'
-                    };
-                }
+                return {
+                    success: false,
+                    profile_id: profileId,
+                    message: '⚠ Account chưa đăng nhập TikTok Seller'
+                };
             }
 
             // Other errors - re-throw
@@ -1207,69 +1186,25 @@ ipcMain.handle('batch-fetch-tiktok', async (_event, profilesToFetch: { id: strin
             const errorMsg = error.message || 'Unknown error';
             console.error(`[Batch] ✗ Error ${profileId}:`, errorMsg);
 
-            // CASE 1: NOT_LOGGED_IN → Thử auto-login rồi fetch lại
+            // CASE 1: NOT_LOGGED_IN → Bỏ tự động login, trả về lỗi luôn
             if (errorMsg.includes('NOT_LOGGED_IN')) {
-                console.log(`[Batch] 🔐 Profile not logged in, invoking full login flow...`);
-
-                // Ensure profile is stopped before starting login flow (standardize state)
                 try { await axios.post(`${API_BASE}/profiles/stop/${profileId}`); } catch (e) { }
-                await sleep(2000);
 
-                // Call the full login flow (restarts profile, finds creds, logins)
-                const loginResult = await runLoginFlow(profileId);
+                try {
+                    await saveTikTokDataToDB({
+                        profileId,
+                        profileName,
+                        status: 'not_logged_in',
+                        errorMessage: '⚠ Account not logged in TikTok Seller',
+                        durationMs: Date.now() - profileStartTime
+                    });
+                } catch (dbErr: any) { }
 
-                if (loginResult.success && loginResult.port) {
-                    console.log(`[Batch] ✓ Login flow completed! Retrying fetch...`);
-
-                    // Retry fetch using the port from login result (profile is open)
-                    const tiktokData = await fetchTikTokDataFast(loginResult.port, profileId);
-
-                    const onHoldAmount = tiktokData.summary?.onHoldAmount || '';
-                    const sumAmount = tiktokData.summary?.sumAmount || '';
-                    const monthlyData = tiktokData.summary?.monthly as { month: string; date_time_lower: string; date_time_upper: string; settlement: string }[] || [];
-
-                    const loginFetchResult = {
-                        profile_id: profileId,
-                        success: true,
-                        profile_name: profileName,
-                        net_earning: tiktokData.summary?.netEarning || '',
-                        on_hold_amount: onHoldAmount,
-                        sum_amount: sumAmount,
-                        bank_account_number: tiktokData.summary?.bankAccountNumber || '',
-                        beneficiary_name: tiktokData.summary?.beneficiaryName || '',
-                        monthly_data: monthlyData,
-                        message: `✓ Auto-logged in & fetched data`
-                    };
-
-                    // Save to DB
-                    try {
-                        await saveTikTokDataToDB({
-                            profileId,
-                            profileName,
-                            sellerId: tiktokData.sellerId,
-                            bankAccountNumber: tiktokData.bankAccountNumber,
-                            beneficiaryName: tiktokData.beneficiaryName,
-                            netEarning: loginFetchResult.net_earning,
-                            onHoldAmount: loginFetchResult.on_hold_amount,
-                            sumAmount: loginFetchResult.sum_amount,
-                            monthlyData: monthlyData,
-                            status: 'success',
-                            durationMs: Date.now() - profileStartTime
-                        });
-                    } catch (dbErr: any) {
-                        console.error(`[Batch] DB save error (login-retry) for ${profileId}:`, dbErr.message);
-                    }
-
-                    return loginFetchResult;
-                } else {
-                    // Login failed
-                    try { await axios.post(`${API_BASE}/profiles/stop/${profileId}`); } catch (e) { }
-                    return {
-                        profile_id: profileId,
-                        success: false,
-                        message: `🔐 Auto-login failed: ${loginResult.message}`
-                    };
-                }
+                return {
+                    profile_id: profileId,
+                    success: false,
+                    message: `⚠ Account not logged in TikTok Seller`//tiếng anh
+                };
             }
 
             // CASE 2: Profile "in use" → Skip (không retry)

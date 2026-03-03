@@ -617,7 +617,8 @@
                 </div>
                 <div>
                     <h1>HMA Manager</h1>
-                    <p style="font-size:12px; color:var(--text-secondary)" id="statusText">Ready to start</p>
+                    <p style="font-size:12px; color:var(--text-secondary)" id="statusText">Ready to start <span
+                            id="appVersionBadge" style="opacity:0.7; font-size:11px;"></span></p>
                 </div>
             </div>
             <div class="header-controls">
@@ -662,11 +663,6 @@
             <button class="btn btn-primary" onclick="fetchSelectedProfiles()" id="fetchSelectedBtn"
                 style="background: linear-gradient(135deg, #f59e0b, #d97706);">
                 <i data-lucide="dollar-sign"></i> Fetch Selected
-            </button>
-
-            <button class="btn btn-secondary" onclick="fetchAllProfiles()" id="fetchAllBtn"
-                style="border-color: #f59e0b; color: #f59e0b;">
-                <i data-lucide="download"></i> Fetch All
             </button>
 
             <button class="btn btn-primary" onclick="openBatchLoginModal()" id="loginSelectedBtn"
@@ -742,6 +738,45 @@
         </div>
     </div>
 
+    <!-- BATCH FETCH MODAL -->
+    <div class="modal-overlay" id="batchFetchModal" style="display:none;">
+        <div class="modal-content" style="max-width:600px; max-height:80vh;">
+            <div class="modal-header">
+                <h3 style="display:flex; align-items:center; gap:8px;">
+                    <i data-lucide="download" style="color:var(--primary-color);"></i>
+                    Batch Fetch Data
+                </h3>
+                <button class="btn-icon" id="iconCloseBatchFetchBtn" onclick="closeBatchFetchModal()">
+                    <i data-lucide="x"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;">
+                    <span id="batchFetchStatus" style="font-size:14px; color:var(--text-secondary);">
+                        Ready to fetch
+                    </span>
+                    <span id="batchFetchProgress" style="font-size:14px; font-weight:600;">
+                        0/0
+                    </span>
+                </div>
+                <div class="progress-track" style="margin-bottom:16px;">
+                    <div class="progress-fill" id="batchFetchProgressFill" style="width:0%;"></div>
+                </div>
+                <div id="batchFetchList" style="max-height:400px; overflow-y:auto;">
+                    <!-- Fetch items will be injected here -->
+                </div>
+            </div>
+            <div class="modal-footer"
+                style="display:flex; gap:12px; justify-content:flex-end; padding-top:16px; border-top:1px solid var(--border-color);">
+                <button class="btn btn-secondary" id="closeBatchFetchBtn"
+                    onclick="closeBatchFetchModal()">Close</button>
+                <button class="btn btn-primary" id="startBatchFetchBtn" onclick="startBatchFetch()">
+                    <i data-lucide="play"></i> Start Fetch
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- TOASTS -->
     <div class="toast-container" id="toastContainer"></div>
 
@@ -750,11 +785,22 @@
 
         let allProfiles = [];
         let filteredProfiles = [];
-        let isDark = true; // Default dark mode
+        let isDark = false; // Default light mode
         const activeLoginProfiles = new Set(); // Track loading profiles
         const runningProfiles = new Set(); // Track running profiles for toggle button
 
-        // Helper to update profile status in arrays and re-render
+        // Load App Version
+        (async () => {
+            try {
+                const info = await ipcRenderer.invoke('get-app-version');
+                const badge = document.getElementById('appVersionBadge');
+                if (badge && info.version) {
+                    badge.textContent = `• v${info.version}`;
+                }
+            } catch (e) { }
+        })();
+
+        // Helper to update profile status in arrays and update DOM directly (giảm lag)
         function updateProfileStatus(profileId, newStatus) {
             // Update in allProfiles
             const profileIndex = allProfiles.findIndex(p => p.id === profileId);
@@ -772,8 +818,47 @@
             } else {
                 runningProfiles.delete(profileId);
             }
-            // Re-render to show updated status
-            renderProfiles();
+
+            // Xử lý logic DOM để không cần phải vẽ lại cả danh sách
+            const badge = document.getElementById(`badge-status-${profileId}`);
+            if (badge) {
+                let statusBadgeClass = 'badge-browser';
+                let statusIcon = 'help-circle';
+                let statusColor = '#6b7280';
+
+                if (newStatus === 'ready') {
+                    statusBadgeClass = 'badge-proxy on';
+                    statusIcon = 'check-circle';
+                    statusColor = 'var(--success-color)';
+                } else if (newStatus === 'running') {
+                    statusBadgeClass = 'badge-browser';
+                    statusIcon = 'play-circle';
+                    statusColor = 'var(--primary-color)';
+                } else if (newStatus === 'stopped' || newStatus === 'offline') {
+                    statusBadgeClass = 'badge-proxy off';
+                    statusIcon = 'circle';
+                    statusColor = 'var(--text-secondary)';
+                } else if (newStatus === 'error') {
+                    statusBadgeClass = 'badge-proxy off';
+                    statusIcon = 'alert-circle';
+                    statusColor = 'var(--danger-color)';
+                }
+
+                badge.className = `badge ${statusBadgeClass}`;
+                badge.innerHTML = `<i data-lucide="${statusIcon}" size="12" style="color:${statusColor}"></i> ${newStatus.charAt(0).toUpperCase() + newStatus.slice(1)}`;
+            }
+
+            const toggleBtn = document.getElementById(`btn-toggle-${profileId}`);
+            if (toggleBtn) {
+                const isRunning = newStatus === 'running' || runningProfiles.has(profileId);
+                toggleBtn.title = isRunning ? 'Stop Profile' : 'Run Profile';
+                toggleBtn.innerHTML = isRunning
+                    ? '<i data-lucide="square" style="color:var(--danger-color)"></i>'
+                    : '<i data-lucide="play" style="color:var(--success-color)"></i>';
+            }
+
+            // Re-render icons for just these elements
+            lucide.createIcons();
         }
 
         // Helper to update UI button for a profile
@@ -817,8 +902,11 @@
             const savedTheme = localStorage.getItem('theme');
             if (savedTheme) {
                 isDark = savedTheme === 'dark';
-                document.documentElement.className = savedTheme;
+            } else {
+                isDark = false; // Mặc định là light mode
             }
+            document.documentElement.className = isDark ? 'dark' : 'light';
+            document.querySelector('.theme-toggle i').setAttribute('data-lucide', isDark ? 'moon' : 'sun');
             loadProfiles();
         });
 
@@ -898,7 +986,7 @@
                         </span>
                     </div>
                     <div>
-                        <span class="badge ${statusBadgeClass}">
+                        <span class="badge ${statusBadgeClass}" id="badge-status-${p.id}">
                             <i data-lucide="${statusIcon}" size="12" style="color:${statusColor}"></i> ${status.charAt(0).toUpperCase() + status.slice(1)}
                         </span>
                     </div>
@@ -908,7 +996,7 @@
                         </span>
                     </div>
                     <div style="text-align:right; display:flex; gap:4px; justify-content:flex-end">
-                        <button class="btn-icon" onclick="toggleProfile('${p.id}')" title="${status === 'running' || runningProfiles.has(p.id) ? 'Stop Profile' : 'Run Profile'}">
+                        <button class="btn-icon" id="btn-toggle-${p.id}" onclick="toggleProfile('${p.id}')" title="${status === 'running' || runningProfiles.has(p.id) ? 'Stop Profile' : 'Run Profile'}">
                             ${status === 'running' || runningProfiles.has(p.id)
                         ? '<i data-lucide="square" style="color:var(--danger-color)"></i>'
                         : '<i data-lucide="play" style="color:var(--success-color)"></i>'}
@@ -1098,7 +1186,7 @@
         }
 
         // Fetch TikTok data cho các profiles đã chọn
-        async function fetchSelectedProfiles() {
+        function fetchSelectedProfiles() {
             const chk = document.querySelectorAll('.profile-checkbox:checked');
             const ids = Array.from(chk).map(c => c.value);
 
@@ -1109,95 +1197,7 @@
                 return { id: c.value, name: profile ? (profile.name || '') : '' };
             });
 
-            const delay = (parseInt(document.getElementById('delayInput').value) || 3) * 1000;
-            const btn = document.getElementById('fetchSelectedBtn');
-
-            btn.disabled = true;
-            btn.innerHTML = `<i data-lucide="loader-2" class="spin"></i> Fetching...`;
-            lucide.createIcons();
-
-            document.getElementById('progressContainer').classList.add('active');
-
-            showToast(`Fetching TikTok data from ${profilesToFetch.length} profiles...`, 'info');
-
-            const result = await ipcRenderer.invoke('batch-fetch-tiktok', profilesToFetch, delay);
-
-            btn.disabled = false;
-            btn.innerHTML = `<i data-lucide="dollar-sign"></i> Fetch Selected`;
-            lucide.createIcons();
-
-            if (result.success) {
-                const successCount = result.results.filter(r => r.success).length;
-                const failedResults = result.results.filter(r => !r.success);
-
-                if (failedResults.length > 0) {
-                    // Show failed profiles with error messages
-                    showToast(`${successCount}/${ids.length} success, ${failedResults.length} failed`, failedResults.length > 0 ? 'error' : 'success');
-
-                    // Show each failed profile error (limit to first 5)
-                    failedResults.slice(0, 5).forEach((r, idx) => {
-                        setTimeout(() => {
-                            showToast(`Profile ${idx + 1}: ${r.message}`, 'error');
-                        }, (idx + 1) * 500);
-                    });
-
-                    if (failedResults.length > 5) {
-                        setTimeout(() => {
-                            showToast(`... and ${failedResults.length - 5} more failed`, 'error');
-                        }, 3500);
-                    }
-                } else {
-                    showToast(`Done! ${successCount}/${ids.length} profiles fetched successfully`, 'success');
-                }
-
-                // Log kết quả
-                console.log('=== BATCH FETCH RESULTS ===');
-                result.results.forEach((r, idx) => {
-                    console.log(`${idx + 1}. [${r.profile_name || 'N/A'}] ${r.profile_id || r.profileId}: ${r.success ? r.on_hold_amount : 'FAILED - ' + r.message}`);
-                });
-            }
-
-            setTimeout(() => document.getElementById('progressContainer').classList.remove('active'), 2000);
-        }
-
-        // Fetch TikTok data cho TẤT CẢ profiles
-        async function fetchAllProfiles() {
-            if (filteredProfiles.length === 0) return showToast('No profiles to fetch', 'error');
-
-            const confirmMsg = `Fetch TikTok data from ALL ${filteredProfiles.length} profiles? This may take a while.`;
-            if (!confirm(confirmMsg)) return;
-
-            const delay = (parseInt(document.getElementById('delayInput').value) || 3) * 1000;
-            const btn = document.getElementById('fetchAllBtn');
-            const ids = filteredProfiles.map(p => p.id);
-            const profilesToFetch = filteredProfiles.map(p => ({ id: p.id, name: p.name || '' }));
-
-            btn.disabled = true;
-            btn.innerHTML = `<i data-lucide="loader-2" class="spin"></i> Fetching All...`;
-            lucide.createIcons();
-
-            document.getElementById('progressContainer').classList.add('active');
-
-            showToast(`Fetching TikTok data from ALL ${profilesToFetch.length} profiles...`, 'info');
-
-            const result = await ipcRenderer.invoke('batch-fetch-tiktok', profilesToFetch, delay);
-
-            btn.disabled = false;
-            btn.innerHTML = `<i data-lucide="download"></i> Fetch All`;
-            lucide.createIcons();
-
-            if (result.success) {
-                const successCount = result.results.filter(r => r.success).length;
-                showToast(`Done! ${successCount}/${ids.length} profiles fetched successfully`, 'success');
-
-                // Log kết quả
-                console.log('=== BATCH FETCH ALL RESULTS ===');
-                result.results.forEach((r, idx) => {
-                    console.log(`${idx + 1}. [${r.profile_name || 'N/A'}] ${r.profile_id || r.profileId}: ${r.success ? r.on_hold_amount : 'FAILED - ' + r.message}`);
-                });
-            }
-
-            setTimeout(() => document.getElementById('progressContainer').classList.remove('active'), 2000);
+            openBatchFetchModal(profilesToFetch);
         }
 
         // Progress Listener cho cả run và fetch
@@ -1210,6 +1210,8 @@
 
         ipcRenderer.on('fetch-progress', (e, data) => {
             const pct = Math.round((data.current / data.total) * 100);
+
+            // For old progress bar UI
             document.getElementById('progressFill').style.width = pct + '%';
             document.getElementById('progressPercent').innerText = pct + '%';
 
@@ -1219,7 +1221,134 @@
 
             const pId = data.profile_id || data.profileId;
             document.getElementById('progressText').innerText = `${statusIcon} Fetching ${data.current}/${data.total}: ${pId}`;
+
+            // Update Batch Fetch Modal UI
+            document.getElementById('batchFetchProgressFill').style.width = pct + '%';
+            document.getElementById('batchFetchProgress').textContent = `${data.current}/${data.total}`;
+
+            if (pId && !pId.startsWith("Chunk")) {
+                let badgeClass = data.status === 'success' ? 'success' : (data.status === 'error' ? 'error' : 'running');
+                let badgeText = data.status === 'success' ? 'Success' : (data.status === 'error' ? (data.result?.message || 'Error') : 'Running');
+
+                const badge = document.getElementById(`fetch-status-${pId}`);
+                if (badge) {
+                    badge.className = `login-status ${badgeClass}`;
+                    badge.textContent = badgeText;
+                    if (badgeClass === 'running') {
+                        document.getElementById(`fetch-item-${pId}`).scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    }
+                }
+            } else if (pId && pId.startsWith("Chunk")) {
+                document.getElementById('batchFetchStatus').textContent = pId;
+            }
         });
+
+        // ============================================
+        // BATCH FETCH LOGIC
+        // ============================================
+
+        let batchFetchQueue = [];
+        let isBatchFetchRunning = false;
+
+        function openBatchFetchModal(profiles) {
+            batchFetchQueue = profiles;
+            isBatchFetchRunning = false;
+
+            const listEl = document.getElementById('batchFetchList');
+            listEl.innerHTML = '';
+
+            profiles.forEach(p => {
+                const itemEl = document.createElement('div');
+                itemEl.className = 'login-item';
+                itemEl.id = `fetch-item-${p.id}`;
+                itemEl.innerHTML = `
+                    <div class="login-item-info">
+                        <span class="login-item-name">${p.name}</span>
+                        <span class="login-item-id">${p.id}</span>
+                    </div>
+                    <span class="login-status pending" id="fetch-status-${p.id}">Pending</span>
+                `;
+                listEl.appendChild(itemEl);
+            });
+
+            document.getElementById('batchFetchStatus').textContent = `Ready to fetch ${profiles.length} profiles`;
+            document.getElementById('batchFetchProgress').textContent = `0/${profiles.length}`;
+            document.getElementById('batchFetchProgressFill').style.width = '0%';
+
+            const btn = document.getElementById('startBatchFetchBtn');
+            btn.style.display = 'inline-flex';
+            btn.disabled = false;
+            btn.innerHTML = '<i data-lucide="play"></i> Start Fetch';
+
+            const closeBtn = document.getElementById('closeBatchFetchBtn');
+            if (closeBtn) closeBtn.disabled = false;
+
+            lucide.createIcons();
+            document.getElementById('batchFetchModal').style.display = 'flex';
+        }
+
+        function closeBatchFetchModal() {
+            if (isBatchFetchRunning) {
+                showToast('Please wait until fetching is completed!', 'warning');
+                return;
+            }
+            document.getElementById('batchFetchModal').style.display = 'none';
+        }
+
+        async function startBatchFetch() {
+            if (isBatchFetchRunning) return;
+            isBatchFetchRunning = true;
+
+            const btn = document.getElementById('startBatchFetchBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Fetching...';
+
+            // Chặn nút Close trong lúc đang chạy
+            const closeBtn = document.getElementById('closeBatchFetchBtn');
+            const iconCloseBtn = document.getElementById('iconCloseBatchFetchBtn');
+            if (closeBtn) closeBtn.disabled = true;
+            if (iconCloseBtn) iconCloseBtn.disabled = true;
+
+            lucide.createIcons();
+
+            document.getElementById('batchFetchStatus').textContent = 'Processing (Please wait)...';
+
+            // Mark all chunk 1 items as running roughly
+            batchFetchQueue.forEach(p => {
+                const badge = document.getElementById(`fetch-status-${p.id}`);
+                if (badge && badge.classList.contains('pending')) {
+                    badge.className = `login-status pending`;
+                    badge.textContent = `Pending`;
+                }
+            });
+
+            const delay = (parseInt(document.getElementById('delayInput').value) || 3) * 1000;
+            const result = await ipcRenderer.invoke('batch-fetch-tiktok', batchFetchQueue, delay);
+
+            isBatchFetchRunning = false;
+
+            // Cho phép đóng modal sau khi hoàn tất
+            if (closeBtn) {
+                closeBtn.disabled = false;
+                closeBtn.className = 'btn btn-primary'; // Đổi màu nổi bật cho nút Close
+                closeBtn.innerHTML = '<i data-lucide="check"></i> Done (Close)';
+            }
+            if (iconCloseBtn) iconCloseBtn.disabled = false;
+
+            // Ẩn nút "Start Fetch" đi để tránh bấm lại
+            btn.style.display = 'none';
+            lucide.createIcons();
+
+            document.getElementById('batchFetchStatus').textContent = 'Completed!';
+            document.getElementById('batchFetchProgressFill').style.width = '100%';
+
+            if (result.success) {
+                const successCount = result.results.filter(r => r.success).length;
+                showToast(`Done! ${successCount}/${batchFetchQueue.length} profiles fetched`, 'success');
+            } else {
+                showToast(`Fetch completed with some errors.`, 'warning');
+            }
+        }
 
         function showToast(msg, type = 'info') {
             const box = document.createElement('div');

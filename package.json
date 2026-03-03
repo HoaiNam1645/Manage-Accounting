@@ -28,6 +28,7 @@
     "@electron-forge/maker-zip": "^7.11.1",
     "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
     "@electron-forge/plugin-fuses": "^7.11.1",
+    "@electron-forge/publisher-github": "^7.11.1",
     "@electron/fuses": "^1.8.0",
     "@types/node": "^25.2.0",
     "electron": "^40.1.0",
@@ -36,9 +37,11 @@
   },
   "dependencies": {
     "axios": "^1.13.4",
+    "electron-log": "^5.4.3",
     "electron-squirrel-startup": "^1.0.1",
     "mysql2": "^3.18.0",
     "puppeteer-core": "^24.36.1",
+    "update-electron-app": "^3.1.2",
     "xlsx": "^0.18.5"
   }
 }
