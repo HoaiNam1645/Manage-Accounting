@@ -42,7 +42,7 @@ module.exports = {
           name: 'Manage-Accounting',
         },
         prerelease: false,
-        draft: true, // Draft mode: bạn review trước khi publish chính thức
+        draft: false, // Draft mode: bạn review trước khi publish chính thức
       },
     },
   ],

@@ -1,4 +1,10 @@
 import { app, BrowserWindow, ipcMain, screen, dialog } from 'electron';
+
+// Handle creating/removing shortcuts on Windows when installing/uninstalling.
+if (require('electron-squirrel-startup')) {
+    app.quit();
+}
+
 import * as path from 'path';
 import axios from 'axios';
 import puppeteer from 'puppeteer-core';
