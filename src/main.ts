@@ -16,6 +16,10 @@ import { updateElectronApp, UpdateSourceType } from 'update-electron-app';
 const API_BASE = 'http://127.0.0.1:2268';
 
 let mainWindow: BrowserWindow | null = null;
+import { autoUpdater } from 'electron';
+import log from 'electron-log';
+
+log.transports.file.level = 'info';
 
 // ============================================
 // AUTO-UPDATE CONFIGURATION
@@ -25,8 +29,38 @@ updateElectronApp({
         type: UpdateSourceType.ElectronPublicUpdateService,
         repo: 'HoaiNam1645/Manage-Accounting',
     },
-    updateInterval: '10 minutes',
+    updateInterval: '2 minutes',
+    logger: log,
     notifyUser: true,
+});
+
+// Thêm sự kiện Debug cho Auto Updater để dễ dàng kiểm tra lỗi
+autoUpdater.on('checking-for-update', () => {
+    log.info('Đang kiểm tra bản cập nhật...');
+});
+autoUpdater.on('update-available', () => {
+    log.info('Đã thấy bản cập nhật mới trên GitHub (đang tải ngầm về)');
+});
+autoUpdater.on('update-not-available', () => {
+    log.info('Chưa có bản cập nhật nào mới hơn hiện tại.');
+});
+autoUpdater.on('update-downloaded', (event: any, releaseNotes: string, releaseName: string) => {
+    log.info('Đã tải xong bản cập nhật:', releaseName);
+    // Dialog này sẽ chắc chắn hiện lên đè lên mọi thứ để user nhấn confirm
+    const dialogOpts: any = {
+        type: 'info',
+        buttons: ['Khởi động lại ngay', 'Để sau'],
+        title: 'Cập nhật hoàn tất',
+        message: 'Bản cập nhật đã được cài đặt dưới nền.',
+        detail: 'Bấm Khởi động lại ngay để áp dụng bản cập nhật.'
+    };
+
+    dialog.showMessageBox(dialogOpts).then((returnValue: any) => {
+        if (returnValue.response === 0) autoUpdater.quitAndInstall();
+    });
+});
+autoUpdater.on('error', (err: Error) => {
+    log.error('Lỗi trong quá trình cập nhật:', err);
 });
 
 // Window arrangement tracking - use Set to avoid race conditions
