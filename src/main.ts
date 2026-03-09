@@ -29,7 +29,7 @@ updateElectronApp({
         type: UpdateSourceType.ElectronPublicUpdateService,
         repo: 'HoaiNam1645/Manage-Accounting',
     },
-    updateInterval: '2 minutes',
+    updateInterval: '5 minutes',
     logger: log,
     notifyUser: true,
 });
